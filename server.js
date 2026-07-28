@@ -74,6 +74,17 @@ app.get('/', (req, res) => {
   res.send('Biometric Verification Desk backend is running. Send POST requests with { fn, args }.');
 });
 
+// Catch-all for any route/method not otherwise handled - JSON, not HTML
+app.use((req, res) => {
+  res.status(404).json({ ok: false, error: 'Not found. This backend only responds to POST requests.' });
+});
+
+// Global error handler - guarantees JSON even if something fails before
+// reaching our own try/catch (e.g. a body-parsing error in middleware).
+app.use((err, req, res, next) => {
+  res.status(500).json({ ok: false, error: 'Unexpected server error: ' + (err && err.message ? err.message : String(err)) });
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
