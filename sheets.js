@@ -1,0 +1,145 @@
+// sheets.js — Google Sheets API connection layer, using a service account.
+// Replaces Apps Script's SpreadsheetApp with equivalent Sheets API v4 calls.
+
+const { google } = require('googleapis');
+
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+const MASTER_SHEET_NAME = process.env.MASTER_SHEET_NAME || null; // null = use first sheet
+const USER_SHEET_NAME = 'User Accounts';
+const ACTIVITY_LOG_SHEET_NAME = 'Activity Log';
+
+function getCredentials() {
+  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  if (!raw) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON environment variable is not set.');
+  return JSON.parse(raw);
+}
+
+let sheetsClientPromise = null;
+function getSheetsClient() {
+  if (!sheetsClientPromise) {
+    const credentials = getCredentials();
+    const auth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets']
+    });
+    sheetsClientPromise = auth.getClient().then(authClient => google.sheets({ version: 'v4', auth: authClient }));
+  }
+  return sheetsClientPromise;
+}
+
+// Caches the actual sheet title list so we only fetch it once per process,
+// refreshed on demand if a named sheet is created for the first time.
+let cachedSheetTitles = null;
+async function getSheetTitles(forceRefresh) {
+  if (cachedSheetTitles && !forceRefresh) return cachedSheetTitles;
+  const sheets = await getSheetsClient();
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+  cachedSheetTitles = meta.data.sheets.map(s => s.properties.title);
+  return cachedSheetTitles;
+}
+
+async function getMasterSheetName() {
+  if (MASTER_SHEET_NAME) return MASTER_SHEET_NAME;
+  const titles = await getSheetTitles();
+  return titles[0];
+}
+
+async function sheetExists(name) {
+  const titles = await getSheetTitles();
+  return titles.indexOf(name) !== -1;
+}
+
+async function createSheet(name, headerRow) {
+  const sheets = await getSheetsClient();
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: { requests: [{ addSheet: { properties: { title: name } } }] }
+  });
+  await getSheetTitles(true); // refresh cache
+  if (headerRow && headerRow.length) {
+    await writeRange(`${name}!A1`, [headerRow]);
+  }
+}
+
+async function ensureSheet(name, headerRow) {
+  if (!(await sheetExists(name))) {
+    await createSheet(name, headerRow);
+  }
+}
+
+async function readRange(rangeA1) {
+  const sheets = await getSheetsClient();
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range: rangeA1
+  });
+  return res.data.values || [];
+}
+
+async function writeRange(rangeA1, values) {
+  const sheets = await getSheetsClient();
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: rangeA1,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values }
+  });
+}
+
+async function appendRows(sheetName, values) {
+  const sheets = await getSheetsClient();
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `${sheetName}!A1`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values }
+  });
+}
+
+async function clearRange(rangeA1) {
+  const sheets = await getSheetsClient();
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range: rangeA1
+  });
+}
+
+async function getSheetIdByName(name) {
+  const sheets = await getSheetsClient();
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+  const sheet = meta.data.sheets.find(s => s.properties.title === name);
+  return sheet ? sheet.properties.sheetId : null;
+}
+
+async function deleteRow(sheetName, rowNumber1Indexed) {
+  const sheetId = await getSheetIdByName(sheetName);
+  const sheets = await getSheetsClient();
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: {
+      requests: [{
+        deleteDimension: {
+          range: {
+            sheetId,
+            dimension: 'ROWS',
+            startIndex: rowNumber1Indexed - 1,
+            endIndex: rowNumber1Indexed
+          }
+        }
+      }]
+    }
+  });
+}
+
+module.exports = {
+  getMasterSheetName,
+  ensureSheet,
+  readRange,
+  writeRange,
+  appendRows,
+  clearRange,
+  deleteRow,
+  USER_SHEET_NAME,
+  ACTIVITY_LOG_SHEET_NAME
+};
