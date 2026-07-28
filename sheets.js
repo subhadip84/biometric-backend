@@ -84,6 +84,22 @@ async function writeRange(rangeA1, values) {
   });
 }
 
+// Combines many individual cell/range writes into ONE API call, instead of
+// one call per write. This is essential to avoid hitting Google Sheets API's
+// per-minute write quota when updating several cells at once (e.g. marking
+// a student verified touches 4-6 cells; bulk operations touch many rows).
+async function batchWriteRanges(updates) {
+  if (!updates.length) return;
+  const sheets = await getSheetsClient();
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: {
+      valueInputOption: 'USER_ENTERED',
+      data: updates.map(u => ({ range: u.range, values: u.values }))
+    }
+  });
+}
+
 async function appendRows(sheetName, values) {
   const sheets = await getSheetsClient();
   await sheets.spreadsheets.values.append({
@@ -135,6 +151,7 @@ module.exports = {
   ensureSheet,
   readRange,
   writeRange,
+  batchWriteRanges,
   appendRows,
   clearRange,
   deleteRow,
