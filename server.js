@@ -17,8 +17,7 @@ app.use(cors({ origin: ALLOWED_ORIGIN }));
 
 app.use(express.text({ type: '*/*' })); // frontend sends text/plain to avoid CORS preflight
 
-// ---------- Phase 1 + Phase 2 functions wired in; Phase 3 (announcements,
-// help stats, session logging, CSV export) still to come ----------
+// ---------- Phase 1, 2, and 3 all wired in now ----------
 const API_FUNCTIONS = {
   // Phase 1
   checkLogin: core.checkLogin,
@@ -41,7 +40,20 @@ const API_FUNCTIONS = {
   getDistinctSiteCodes: core.getDistinctSiteCodes,
   validateImportRows: core.validateImportRows,
   importNewStudents: core.importNewStudents,
-  importVerificationUpdates: core.importVerificationUpdates
+  importVerificationUpdates: core.importVerificationUpdates,
+  // Phase 3
+  getAnnouncements: core.getAnnouncements,
+  publishAnnouncement: core.publishAnnouncement,
+  updateAnnouncement: core.updateAnnouncement,
+  deleteAnnouncement: core.deleteAnnouncement,
+  logHelpQuestion: core.logHelpQuestion,
+  getHelpQuestionStats: core.getHelpQuestionStats,
+  logSessionIp: core.logSessionIp,
+  logSessionEnd: core.logSessionEnd,
+  exportRosterAsCsv: core.exportRosterAsCsv,
+  getLastImportInfo: core.getLastImportInfo,
+  getTodayImportCount: core.getTodayImportCount,
+  getLastImportTimestamp: core.getLastImportTimestamp
 };
 
 app.post('/', async (req, res) => {
