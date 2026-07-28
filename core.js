@@ -402,10 +402,391 @@ async function adminLockAllDone(password, actor) {
   return { ok: true, count };
 }
 
+// ---------- User management ----------
+
+function generateUserId(name, mobile) {
+  const lettersOnly = String(name || '').replace(/[^a-zA-Z]/g, '').toLowerCase();
+  let namePart;
+  if (lettersOnly.length >= 5) namePart = lettersOnly.slice(0, 5);
+  else if (lettersOnly.length > 0) namePart = lettersOnly;
+  else namePart = 'user';
+  const digitsOnly = String(mobile || '').replace(/[^0-9]/g, '');
+  const mobilePart = digitsOnly.length >= 2 ? digitsOnly.slice(-2) : (digitsOnly || '00').padStart(2, '0');
+  return namePart + mobilePart;
+}
+
+function generateRandomPassword() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  const symbols = '!@#$%&*';
+  let pwd = '';
+  for (let i = 0; i < 8; i++) pwd += chars.charAt(Math.floor(Math.random() * chars.length));
+  pwd += symbols.charAt(Math.floor(Math.random() * symbols.length));
+  pwd += String(Math.floor(Math.random() * 10));
+  return pwd;
+}
+
+async function checkUserIdAvailability(userId) {
+  const key = String(userId || '').trim().toLowerCase();
+  if (!key) return { ok: true, available: false, reason: 'User ID cannot be blank.' };
+  const users = await getAllUsers();
+  const taken = Object.keys(users).some(k => k.toLowerCase() === key);
+  return { ok: true, available: !taken };
+}
+
+async function findContactConflicts(mobile, email, excludeUserId) {
+  const users = await getAllUsers();
+  const normMobile = String(mobile || '').replace(/[^0-9]/g, '');
+  const normEmail = String(email || '').trim().toLowerCase();
+  let mobileConflict = false, emailConflict = false;
+  Object.keys(users).forEach(key => {
+    if (excludeUserId && key === excludeUserId) return;
+    const u = users[key];
+    if (normMobile && String(u.mobile || '').replace(/[^0-9]/g, '') === normMobile) mobileConflict = true;
+    if (normEmail && String(u.email || '').trim().toLowerCase() === normEmail) emailConflict = true;
+  });
+  return { mobileConflict, emailConflict };
+}
+
+async function checkContactAvailability(mobile, email, excludeUserId) {
+  const conflicts = await findContactConflicts(mobile, email, excludeUserId);
+  return { ok: true, mobileTaken: conflicts.mobileConflict, emailTaken: conflicts.emailConflict };
+}
+
+async function createUser(newUserId, newPassword, role, adminPassword, displayName, actor, permissions, autoGeneratePassword, mobile, email, school, autoGenerateUserId) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+
+  role = (role === 'admin') ? 'admin' : 'staff';
+  let name = (displayName && String(displayName).trim()) || '';
+
+  const users = await getAllUsers();
+  let key;
+
+  if (autoGenerateUserId) {
+    if (!name) return { ok: false, error: 'Name is required to auto-generate a User ID.' };
+    const baseId = generateUserId(name, mobile);
+    key = baseId;
+    let suffix = 1;
+    while (users.hasOwnProperty(key)) { key = baseId + suffix; suffix++; }
+  } else {
+    key = String(newUserId || '').trim();
+    if (!key || !/^[a-zA-Z0-9_.-]+$/.test(key)) {
+      return { ok: false, error: 'User ID must contain only letters, numbers, dots, dashes, or underscores.' };
+    }
+    if (users.hasOwnProperty(key)) return { ok: false, error: 'That User ID already exists.' };
+  }
+
+  let finalPassword;
+  if (autoGeneratePassword) {
+    finalPassword = generateRandomPassword();
+  } else {
+    if (!newPassword || newPassword.length < 4) return { ok: false, error: 'Password must be at least 4 characters.' };
+    finalPassword = newPassword;
+  }
+
+  if (!name) name = key;
+
+  const contactCheck = await findContactConflicts(mobile, email, null);
+  if (contactCheck.mobileConflict) return { ok: false, error: 'That mobile number is already used by another account.' };
+  if (contactCheck.emailConflict) return { ok: false, error: 'That email is already used by another account.' };
+
+  const userRecord = {
+    password: finalPassword, role, name,
+    mobile: mobile ? String(mobile).trim() : '',
+    email: email ? String(email).trim() : '',
+    school: school ? String(school).trim() : ''
+  };
+  if (autoGeneratePassword) userRecord.mustChangePassword = true;
+  if (role === 'admin' && permissions && typeof permissions === 'object') {
+    const cleanPerms = {};
+    ALL_PERMISSION_KEYS.forEach(k => { cleanPerms[k] = !!permissions[k]; });
+    userRecord.permissions = cleanPerms;
+  }
+
+  users[key] = userRecord;
+  await writeAllUsers(users);
+  await logActivity(actor || 'Admin', 'User Created', `${key} (${role})${autoGenerateUserId ? ' — auto-generated ID' : ''}${autoGeneratePassword ? ' — auto-generated password' : ''}`);
+  return { ok: true, userId: key, generatedPassword: autoGeneratePassword ? finalPassword : null };
+}
+
+async function deleteUser(targetUserId, adminPassword, actor) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const key = String(targetUserId || '').trim();
+  const users = await getAllUsers();
+  if (!key || !users.hasOwnProperty(key)) return { ok: false, error: 'Unknown account.' };
+  delete users[key];
+  await writeAllUsers(users);
+  await logActivity(actor || 'Admin', 'User Deleted', key);
+  return { ok: true };
+}
+
+async function updateUserDetails(targetUserId, newName, newRole, permissions, adminPassword, actor, mobile, email, school) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const key = String(targetUserId || '').trim();
+  const users = await getAllUsers();
+  if (!key || !users.hasOwnProperty(key)) return { ok: false, error: 'Unknown account.' };
+
+  const role = (newRole === 'admin') ? 'admin' : 'staff';
+  if (users[key].role === 'admin' && role === 'staff') {
+    const adminCount = Object.keys(users).filter(k => users[k].role === 'admin').length;
+    if (adminCount <= 1) return { ok: false, error: 'Cannot demote the only remaining admin account to staff.' };
+  }
+
+  const contactCheck = await findContactConflicts(mobile, email, key);
+  if (contactCheck.mobileConflict) return { ok: false, error: 'That mobile number is already used by another account.' };
+  if (contactCheck.emailConflict) return { ok: false, error: 'That email is already used by another account.' };
+
+  const name = (newName && String(newName).trim()) || key;
+  users[key].name = name;
+  users[key].role = role;
+  users[key].mobile = mobile ? String(mobile).trim() : '';
+  users[key].email = email ? String(email).trim() : '';
+  users[key].school = school ? String(school).trim() : '';
+
+  if (role === 'admin') {
+    const cleanPerms = {};
+    ALL_PERMISSION_KEYS.forEach(k => { cleanPerms[k] = !!(permissions && permissions[k]); });
+    users[key].permissions = cleanPerms;
+  } else {
+    delete users[key].permissions;
+  }
+
+  await writeAllUsers(users);
+  await logActivity(actor || 'Admin', 'User Updated', `${key} (${role})`);
+  return { ok: true };
+}
+
+async function getUserList() {
+  const users = await getAllUsers();
+  const list = Object.keys(users).map(k => ({
+    userId: k,
+    role: users[k].role,
+    name: users[k].name || capitalizeFirst(k),
+    mobile: users[k].mobile || '',
+    email: users[k].email || '',
+    school: users[k].school || '',
+    permissions: effectivePermissions(users[k])
+  }));
+  return { ok: true, users: list };
+}
+
+async function changeOwnPassword(userId, oldPassword, newPassword) {
+  const key = String(userId || '').trim();
+  const users = await getAllUsers();
+  if (!key || !users.hasOwnProperty(key)) return { ok: false, error: 'Invalid account.' };
+  if (users[key].password !== oldPassword) return { ok: false, error: 'Current password is incorrect.' };
+  if (!newPassword || newPassword.length < 4) return { ok: false, error: 'New password must be at least 4 characters.' };
+  users[key].password = newPassword;
+  delete users[key].mustChangePassword;
+  await writeAllUsers(users);
+  return { ok: true };
+}
+
+async function adminResetPassword(targetUserId, newPassword, adminPassword) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const key = String(targetUserId || '').trim();
+  const users = await getAllUsers();
+  if (!key || !users.hasOwnProperty(key)) return { ok: false, error: 'Unknown account.' };
+  if (!newPassword || newPassword.length < 4) return { ok: false, error: 'New password must be at least 4 characters.' };
+  users[key].password = newPassword;
+  await writeAllUsers(users);
+  return { ok: true };
+}
+
+async function changeAdminPassword(currentPassword, newPassword, actor) {
+  const existing = await getAdminPassword();
+  if (currentPassword !== existing) return { ok: false, error: 'Current admin password is incorrect.' };
+  if (!newPassword || newPassword.length < 6) return { ok: false, error: 'New admin password must be at least 6 characters.' };
+  await setAdminPassword(newPassword);
+  await logActivity(actor || 'Admin', 'Admin Password Changed', 'The shared admin authorization password was updated.');
+  return { ok: true };
+}
+
+async function deleteStudent(rowId, adminPassword, actor) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectColumns(headers);
+  col = await ensureExtraColumns(sheetName, headers, col);
+
+  const rowNum = parseInt(String(rowId).replace('row', ''), 10);
+  if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid student id.' };
+
+  const row = data[rowNum - 1] || [];
+  const name = col.name > -1 ? String(row[col.name] || '') : '';
+  const appNo = col.appNo > -1 ? String(row[col.appNo] || '') : '';
+  const regNo = col.regNo > -1 ? String(row[col.regNo] || '') : '';
+
+  await sheetsApi.deleteRow(sheetName, rowNum);
+  await logActivity(actor || 'Admin', 'Student Deleted', `${name} (App No: ${appNo}, Reg No: ${regNo})`);
+  return { ok: true };
+}
+
+async function getDistinctSiteCodes() {
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  if (!data.length) return { ok: true, siteCodes: [] };
+  const headers = data[0];
+  const col = detectColumns(headers);
+  if (col.siteCode === -1) return { ok: true, siteCodes: [] };
+  const codes = new Set();
+  for (let r = 1; r < data.length; r++) {
+    const val = String(data[r][col.siteCode] || '').trim();
+    if (val) codes.add(val);
+  }
+  return { ok: true, siteCodes: Array.from(codes).sort() };
+}
+
+// ---------- Imports ----------
+
+function detectImportColumns(headers) {
+  return detectColumns(headers);
+}
+
+async function validateImportRows(uploadedHeaders, uploadedRows) {
+  const col = detectImportColumns(uploadedHeaders);
+  let missingBothCount = 0, missingNameCount = 0;
+  uploadedRows.forEach(row => {
+    const appNo = col.appNo > -1 ? String(row[col.appNo] || '').trim() : '';
+    const regNo = col.regNo > -1 ? String(row[col.regNo] || '').trim() : '';
+    const name = col.name > -1 ? String(row[col.name] || '').trim() : '';
+    if (!appNo && !regNo) missingBothCount++;
+    if (!name) missingNameCount++;
+  });
+  return {
+    ok: true,
+    detectedName: col.name > -1 ? uploadedHeaders[col.name] : null,
+    detectedAppNo: col.appNo > -1 ? uploadedHeaders[col.appNo] : null,
+    detectedRegNo: col.regNo > -1 ? uploadedHeaders[col.regNo] : null,
+    missingBothCount, missingNameCount
+  };
+}
+
+async function importNewStudents(uploadedHeaders, uploadedRows, adminPassword, actor) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  if (!data.length) return { ok: false, error: 'The master sheet is empty — cannot detect its column layout.' };
+  const headers = data[0];
+  let col = detectColumns(headers);
+  col = await ensureExtraColumns(sheetName, headers, col);
+
+  const uploadCol = detectImportColumns(uploadedHeaders);
+
+  const existingAppNos = new Set();
+  const existingRegNos = new Set();
+  for (let r = 1; r < data.length; r++) {
+    if (col.appNo > -1) { const v = String(data[r][col.appNo] || '').trim().toLowerCase(); if (v) existingAppNos.add(v); }
+    if (col.regNo > -1) { const v = String(data[r][col.regNo] || '').trim().toLowerCase(); if (v) existingRegNos.add(v); }
+  }
+
+  const newRows = [];
+  const skipped = [];
+  uploadedRows.forEach(uRow => {
+    const name = uploadCol.name > -1 ? String(uRow[uploadCol.name] || '').trim() : '';
+    const appNo = uploadCol.appNo > -1 ? String(uRow[uploadCol.appNo] || '').trim() : '';
+    const regNo = uploadCol.regNo > -1 ? String(uRow[uploadCol.regNo] || '').trim() : '';
+    const machineCode = uploadCol.machineCode > -1 ? String(uRow[uploadCol.machineCode] || '').trim() : '';
+    const siteCode = uploadCol.siteCode > -1 ? String(uRow[uploadCol.siteCode] || '').trim() : '';
+    const studentType = uploadCol.studentType > -1 ? String(uRow[uploadCol.studentType] || '').trim() : '';
+
+    if ((regNo && existingRegNos.has(regNo.toLowerCase())) || (appNo && existingAppNos.has(appNo.toLowerCase()))) {
+      skipped.push({ name, appNo, regNo, reason: 'Duplicate App No or Reg No' });
+      return;
+    }
+
+    const newRow = new Array(headers.length).fill('');
+    if (col.name > -1) newRow[col.name] = name;
+    if (col.appNo > -1) newRow[col.appNo] = appNo;
+    if (col.regNo > -1) newRow[col.regNo] = regNo;
+    if (col.machineCode > -1) newRow[col.machineCode] = machineCode;
+    if (col.siteCode > -1) newRow[col.siteCode] = siteCode;
+    if (col.studentType > -1) newRow[col.studentType] = studentType;
+    newRow[col.status] = 'Not Done';
+    newRow[col.lock] = '';
+    newRows.push(newRow);
+
+    if (regNo) existingRegNos.add(regNo.toLowerCase());
+    if (appNo) existingAppNos.add(appNo.toLowerCase());
+  });
+
+  if (newRows.length) await sheetsApi.appendRows(sheetName, newRows);
+
+  await logActivity(actor || 'Admin', 'Imported New Students', `${newRows.length} added, ${skipped.length} skipped as duplicates`);
+  return { ok: true, added: newRows.length, skippedRows: skipped };
+}
+
+async function importVerificationUpdates(uploadedHeaders, uploadedRows, adminPassword, actor) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectColumns(headers);
+  col = await ensureExtraColumns(sheetName, headers, col);
+
+  const uploadCol = detectImportColumns(uploadedHeaders);
+  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+  let updated = 0, alreadyDone = 0;
+  const notFoundRows = [];
+
+  for (const uRow of uploadedRows) {
+    const name = uploadCol.name > -1 ? String(uRow[uploadCol.name] || '').trim() : '';
+    const appNo = uploadCol.appNo > -1 ? String(uRow[uploadCol.appNo] || '').trim() : '';
+    const regNo = uploadCol.regNo > -1 ? String(uRow[uploadCol.regNo] || '').trim() : '';
+
+    let matchedRowNum = -1;
+    for (let r = 1; r < data.length; r++) {
+      const rRegNo = col.regNo > -1 ? String(data[r][col.regNo] || '').trim().toLowerCase() : '';
+      const rAppNo = col.appNo > -1 ? String(data[r][col.appNo] || '').trim().toLowerCase() : '';
+      if (regNo && rRegNo === regNo.toLowerCase()) { matchedRowNum = r + 1; break; }
+      if (appNo && rAppNo === appNo.toLowerCase()) { matchedRowNum = r + 1; break; }
+    }
+
+    if (matchedRowNum === -1) {
+      notFoundRows.push({ name, appNo, regNo });
+      continue;
+    }
+
+    const rowData = data[matchedRowNum - 1];
+    const statusVal = String(rowData[col.status] || '').trim().toLowerCase();
+    const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true' || statusVal === 'completed' || statusVal === 'verified');
+    if (isDone) { alreadyDone++; continue; }
+
+    await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.status)}${matchedRowNum}`, [['Done']]);
+    await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.lock)}${matchedRowNum}`, [['Yes']]);
+    await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.verifiedBy)}${matchedRowNum}`, [['Verification Import']]);
+    await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.verifiedAt)}${matchedRowNum}`, [[timestamp]]);
+    if (!String(rowData[col.firstVerifiedBy] || '').trim()) {
+      await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.firstVerifiedBy)}${matchedRowNum}`, [['Verification Import']]);
+      await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.firstVerifiedAt)}${matchedRowNum}`, [[timestamp]]);
+    }
+    updated++;
+  }
+
+  await logActivity(actor || 'Admin', 'Imported Verification Updates', `${updated} updated, ${alreadyDone} already done, ${notFoundRows.length} not found`);
+  return { ok: true, updated, alreadyDone, notFoundRows };
+}
+
 module.exports = {
   normalize, detectColumns, colToLetter, ensureExtraColumns,
   getAllUsers, writeAllUsers, effectivePermissions, capitalizeFirst, ALL_PERMISSION_KEYS,
   getAdminPassword, setAdminPassword,
   logActivity, getActivityLog,
-  checkLogin, getStudents, updateStatus, adminUnlock, adminLockAllDone
+  checkLogin, getStudents, updateStatus, adminUnlock, adminLockAllDone,
+  checkUserIdAvailability, checkContactAvailability,
+  createUser, deleteUser, updateUserDetails, getUserList,
+  changeOwnPassword, adminResetPassword, changeAdminPassword,
+  deleteStudent, getDistinctSiteCodes,
+  validateImportRows, importNewStudents, importVerificationUpdates
 };
