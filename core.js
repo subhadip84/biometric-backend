@@ -778,6 +778,188 @@ async function importVerificationUpdates(uploadedHeaders, uploadedRows, adminPas
   return { ok: true, updated, alreadyDone, notFoundRows };
 }
 
+// ---------- Generic Settings storage (JSON blobs, e.g. announcements/stats) ----------
+
+async function getSetting(key, defaultValue) {
+  await sheetsApi.ensureSheet(SETTINGS_SHEET_NAME, ['Key', 'Value']);
+  const rows = await sheetsApi.readRange(`${SETTINGS_SHEET_NAME}!A2:B`);
+  const row = rows.find(r => r[0] === key);
+  if (!row || !row[1]) return defaultValue;
+  try { return JSON.parse(row[1]); } catch (e) { return defaultValue; }
+}
+
+async function setSetting(key, value) {
+  await sheetsApi.ensureSheet(SETTINGS_SHEET_NAME, ['Key', 'Value']);
+  const rows = await sheetsApi.readRange(`${SETTINGS_SHEET_NAME}!A2:B`);
+  const idx = rows.findIndex(r => r[0] === key);
+  const jsonVal = JSON.stringify(value);
+  if (idx === -1) {
+    await sheetsApi.appendRows(SETTINGS_SHEET_NAME, [[key, jsonVal]]);
+  } else {
+    await sheetsApi.writeRange(`${SETTINGS_SHEET_NAME}!A${idx + 2}:B${idx + 2}`, [[key, jsonVal]]);
+  }
+}
+
+// ---------- Announcements ----------
+
+async function getAnnouncements() {
+  const list = await getSetting('ANNOUNCEMENTS', []);
+  return { ok: true, announcements: list };
+}
+
+async function publishAnnouncement(message, adminPassword, publishedBy, style) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const list = await getSetting('ANNOUNCEMENTS', []);
+  const now = new Date();
+  const entry = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7),
+    text: message,
+    publishedBy: publishedBy || 'Admin',
+    publishedAt: now.toISOString().replace('T', ' ').slice(0, 19),
+    publishedAtRaw: now.toISOString(),
+    style: style || 'gold'
+  };
+  list.push(entry);
+  await setSetting('ANNOUNCEMENTS', list);
+  await logActivity(publishedBy || 'Admin', 'Message Published', message.slice(0, 80));
+  return { ok: true };
+}
+
+async function updateAnnouncement(id, message, adminPassword, style, actor) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const list = await getSetting('ANNOUNCEMENTS', []);
+  const idx = list.findIndex(a => a.id === id);
+  if (idx === -1) return { ok: false, error: 'Message not found.' };
+  list[idx].text = message;
+  list[idx].style = style || list[idx].style;
+  await setSetting('ANNOUNCEMENTS', list);
+  await logActivity(actor || 'Admin', 'Message Updated', message.slice(0, 80));
+  return { ok: true };
+}
+
+async function deleteAnnouncement(id, adminPassword, actor) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const list = await getSetting('ANNOUNCEMENTS', []);
+  const filtered = list.filter(a => a.id !== id);
+  await setSetting('ANNOUNCEMENTS', filtered);
+  await logActivity(actor || 'Admin', 'Message Deleted', id);
+  return { ok: true };
+}
+
+// ---------- Help Assistant question stats ----------
+
+async function logHelpQuestion(questionText) {
+  const key = String(questionText || '').trim();
+  if (!key) return { ok: true };
+  const counts = await getSetting('HELP_QUESTION_COUNTS', {});
+  counts[key] = (counts[key] || 0) + 1;
+  await setSetting('HELP_QUESTION_COUNTS', counts);
+  return { ok: true };
+}
+
+async function getHelpQuestionStats() {
+  const counts = await getSetting('HELP_QUESTION_COUNTS', {});
+  const list = Object.keys(counts).map(q => ({ question: q, count: counts[q] }));
+  list.sort((a, b) => b.count - a.count);
+  return { ok: true, stats: list };
+}
+
+// ---------- Session logging ----------
+
+async function logSessionIp(actor, ipAddress, failureReason) {
+  if (ipAddress) {
+    await logActivity(actor || 'unknown', 'Session IP', ipAddress);
+  } else {
+    await logActivity(actor || 'unknown', 'Session IP Failed', failureReason || 'unknown reason');
+  }
+  return { ok: true };
+}
+
+async function logSessionEnd(actor, durationText) {
+  await logActivity(actor || 'unknown', 'Session Ended', 'Duration: ' + (durationText || 'unknown'));
+  return { ok: true };
+}
+
+// ---------- CSV export ----------
+
+function csvEscape(val) {
+  const str = String(val ?? '');
+  return (str.indexOf(',') !== -1 || str.indexOf('"') !== -1 || str.indexOf('\n') !== -1)
+    ? '"' + str.replace(/"/g, '""') + '"'
+    : str;
+}
+
+async function exportRosterAsCsv(statusFilter, siteFilter) {
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  const headers = data[0];
+  const col = detectColumns(headers);
+  const wantStatus = statusFilter && statusFilter !== 'all' ? statusFilter : null;
+  const wantSite = siteFilter && siteFilter !== 'all' ? String(siteFilter).trim().toLowerCase() : null;
+
+  let serialColIndex = -1;
+  for (let h = 0; h < headers.length; h++) {
+    const normHeader = normalize(headers[h]);
+    if (['s', 'slno', 'srno', 'sno', 'serialno', 'serialnumber'].includes(normHeader)) { serialColIndex = h; break; }
+  }
+
+  const filteredRows = [headers];
+  let serialCounter = 1;
+  for (let r = 1; r < data.length; r++) {
+    let row = data[r];
+    if (wantStatus) {
+      const statusVal = col.status > -1 ? String(row[col.status] || '').trim().toLowerCase() : '';
+      const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true' || statusVal === 'completed' || statusVal === 'verified');
+      if (wantStatus === 'done' && !isDone) continue;
+      if (wantStatus === 'pending' && isDone) continue;
+    }
+    if (wantSite) {
+      const siteVal = col.siteCode > -1 ? String(row[col.siteCode] || '').trim().toLowerCase() : '';
+      if (siteVal !== wantSite) continue;
+    }
+    if (serialColIndex > -1) {
+      row = row.slice();
+      row[serialColIndex] = serialCounter;
+    }
+    serialCounter++;
+    filteredRows.push(row);
+  }
+
+  const csvText = filteredRows.map(row => row.map(csvEscape).join(',')).join('\r\n');
+  return { ok: true, csv: csvText, rowCount: filteredRows.length - 1, filename: `roster_export_${Date.now()}.csv` };
+}
+
+// ---------- Import stats ----------
+
+async function getLastImportInfo() {
+  const data = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:D`);
+  for (let i = data.length - 1; i >= 0; i--) {
+    if (data[i][2] === 'Imported New Students') {
+      const match = String(data[i][3] || '').match(/^(\d+)\s+added/);
+      const count = match ? parseInt(match[1], 10) : 0;
+      return { ok: true, count, timestamp: data[i][0] || null };
+    }
+  }
+  return { ok: true, count: 0, timestamp: null };
+}
+
+async function getTodayImportCount() {
+  const info = await getLastImportInfo();
+  const todayStr = new Date().toISOString().slice(0, 10);
+  if (info.timestamp && String(info.timestamp).indexOf(todayStr) === 0) {
+    return { ok: true, count: info.count };
+  }
+  return { ok: true, count: 0 };
+}
+
+async function getLastImportTimestamp() {
+  const info = await getLastImportInfo();
+  return { ok: true, timestamp: info.timestamp };
+}
+
 module.exports = {
   normalize, detectColumns, colToLetter, ensureExtraColumns,
   getAllUsers, writeAllUsers, effectivePermissions, capitalizeFirst, ALL_PERMISSION_KEYS,
@@ -788,5 +970,10 @@ module.exports = {
   createUser, deleteUser, updateUserDetails, getUserList,
   changeOwnPassword, adminResetPassword, changeAdminPassword,
   deleteStudent, getDistinctSiteCodes,
-  validateImportRows, importNewStudents, importVerificationUpdates
+  validateImportRows, importNewStudents, importVerificationUpdates,
+  getAnnouncements, publishAnnouncement, updateAnnouncement, deleteAnnouncement,
+  logHelpQuestion, getHelpQuestionStats,
+  logSessionIp, logSessionEnd,
+  exportRosterAsCsv,
+  getLastImportInfo, getTodayImportCount, getLastImportTimestamp
 };
