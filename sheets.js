@@ -14,15 +14,26 @@ function getCredentials() {
   return JSON.parse(raw);
 }
 
-let sheetsClientPromise = null;
-function getSheetsClient() {
-  if (!sheetsClientPromise) {
+let authClientPromise = null;
+function getAuthClient() {
+  if (!authClientPromise) {
     const credentials = getCredentials();
     const auth = new google.auth.GoogleAuth({
       credentials,
-      scopes: ['https://www.googleapis.com/auth/spreadsheets']
+      scopes: [
+        'https://www.googleapis.com/auth/spreadsheets',
+        'https://www.googleapis.com/auth/drive'
+      ]
     });
-    sheetsClientPromise = auth.getClient().then(authClient => google.sheets({ version: 'v4', auth: authClient }));
+    authClientPromise = auth.getClient();
+  }
+  return authClientPromise;
+}
+
+let sheetsClientPromise = null;
+function getSheetsClient() {
+  if (!sheetsClientPromise) {
+    sheetsClientPromise = getAuthClient().then(authClient => google.sheets({ version: 'v4', auth: authClient }));
   }
   return sheetsClientPromise;
 }
@@ -155,6 +166,8 @@ module.exports = {
   appendRows,
   clearRange,
   deleteRow,
+  getAuthClient,
+  SPREADSHEET_ID,
   USER_SHEET_NAME,
   ACTIVITY_LOG_SHEET_NAME
 };
