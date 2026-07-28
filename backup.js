@@ -1,0 +1,88 @@
+// backup.js — daily automatic backup of the Google Sheet, replacing what
+// used to run via Apps Script's time-driven trigger + DriveApp.makeCopy().
+
+const { google } = require('googleapis');
+const sheetsApi = require('./sheets');
+const core = require('./core');
+
+const BACKUP_FOLDER_NAME = 'Biometric Verification Backups';
+const BACKUP_RETENTION_DAYS = 7;
+
+async function getDriveClient() {
+  const authClient = await sheetsApi.getAuthClient();
+  return google.drive({ version: 'v3', auth: authClient });
+}
+
+async function getOrCreateBackupFolder(drive) {
+  const res = await drive.files.list({
+    q: `name='${BACKUP_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+    fields: 'files(id, name)',
+    spaces: 'drive'
+  });
+  if (res.data.files && res.data.files.length) {
+    return res.data.files[0].id;
+  }
+  const folder = await drive.files.create({
+    requestBody: { name: BACKUP_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' },
+    fields: 'id'
+  });
+  return folder.data.id;
+}
+
+async function cleanupOldBackups(drive, folderId) {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - BACKUP_RETENTION_DAYS);
+
+  const res = await drive.files.list({
+    q: `'${folderId}' in parents and trashed=false`,
+    fields: 'files(id, name, createdTime)',
+    spaces: 'drive'
+  });
+
+  const files = res.data.files || [];
+  if (!files.length) return 0;
+
+  // Sort newest first, so we can always identify and protect the single
+  // most recent backup - it must never be deleted, even if it happens to
+  // be older than the retention window (e.g. if backups were interrupted
+  // for a while, we never want to end up with zero backups at all).
+  files.sort((a, b) => new Date(b.createdTime) - new Date(a.createdTime));
+  const mostRecent = files[0];
+
+  let deletedCount = 0;
+  for (const file of files) {
+    if (file.id === mostRecent.id) continue; // never delete the latest one
+    const created = new Date(file.createdTime);
+    if (created < cutoff) {
+      await drive.files.update({ fileId: file.id, requestBody: { trashed: true } });
+      deletedCount++;
+    }
+  }
+  return deletedCount;
+}
+
+async function runDailyBackup() {
+  try {
+    const drive = await getDriveClient();
+    const folderId = await getOrCreateBackupFolder(drive);
+
+    const now = new Date();
+    const dateStr = now.toISOString().replace('T', '_').slice(0, 16).replace(/:/g, '-');
+    const spreadsheetMeta = await drive.files.get({ fileId: sheetsApi.SPREADSHEET_ID, fields: 'name' });
+    const backupName = `${spreadsheetMeta.data.name} - Backup ${dateStr}`;
+
+    await drive.files.copy({
+      fileId: sheetsApi.SPREADSHEET_ID,
+      requestBody: { name: backupName, parents: [folderId] }
+    });
+
+    await cleanupOldBackups(drive, folderId);
+    await core.logActivity('System', 'Daily Backup Completed', backupName);
+    console.log('Daily backup completed:', backupName);
+  } catch (err) {
+    console.error('Daily backup failed:', err.message);
+    try { await core.logActivity('System', 'Daily Backup Failed', err.message); } catch (e) { /* ignore */ }
+  }
+}
+
+module.exports = { runDailyBackup };
