@@ -8,6 +8,16 @@ const core = require('./core');
 const BACKUP_FOLDER_NAME = 'Biometric Verification Backups';
 const BACKUP_RETENTION_DAYS = 7;
 
+function getIndiaTimestamp(date) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false
+  }).formatToParts(date);
+  const get = type => parts.find(p => p.type === type).value;
+  return `${get('year')}-${get('month')}-${get('day')}_${get('hour')}-${get('minute')}`;
+}
+
 async function getDriveClient() {
   const authClient = await sheetsApi.getAuthClient();
   return google.drive({ version: 'v3', auth: authClient });
@@ -67,7 +77,7 @@ async function runDailyBackup() {
     const folderId = await getOrCreateBackupFolder(drive);
 
     const now = new Date();
-    const dateStr = now.toISOString().replace('T', '_').slice(0, 16).replace(/:/g, '-');
+    const dateStr = getIndiaTimestamp(now);
     const spreadsheetMeta = await drive.files.get({ fileId: sheetsApi.SPREADSHEET_ID, fields: 'name' });
     const backupName = `${spreadsheetMeta.data.name} - Backup ${dateStr}`;
 
