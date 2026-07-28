@@ -5,6 +5,15 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const core = require('./core');
+const cron = require('node-cron');
+const { runDailyBackup } = require('./backup');
+
+// Runs every day at 2:00 AM India time, matching the schedule the original
+// Apps Script version used. node-cron handles the timezone conversion.
+cron.schedule('0 2 * * *', () => {
+  console.log('Running scheduled daily backup...');
+  runDailyBackup();
+}, { timezone: 'Asia/Kolkata' });
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -53,7 +62,8 @@ const API_FUNCTIONS = {
   exportRosterAsCsv: core.exportRosterAsCsv,
   getLastImportInfo: core.getLastImportInfo,
   getTodayImportCount: core.getTodayImportCount,
-  getLastImportTimestamp: core.getLastImportTimestamp
+  getLastImportTimestamp: core.getLastImportTimestamp,
+  triggerBackupNow: async () => { await runDailyBackup(); return { ok: true, message: 'Backup triggered.' }; }
 };
 
 app.post('/', async (req, res) => {
