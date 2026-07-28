@@ -27,15 +27,14 @@ function getSheetsClient() {
   return sheetsClientPromise;
 }
 
-// Caches the actual sheet title list so we only fetch it once per process,
-// refreshed on demand if a named sheet is created for the first time.
-let cachedSheetTitles = null;
-async function getSheetTitles(forceRefresh) {
-  if (cachedSheetTitles && !forceRefresh) return cachedSheetTitles;
+// Always fetches fresh sheet titles - no caching, so tab renames (like the
+// master sheet name) are picked up immediately without needing a server
+// restart. This is a lightweight metadata call, not a performance concern
+// for a low-traffic internal tool.
+async function getSheetTitles() {
   const sheets = await getSheetsClient();
   const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
-  cachedSheetTitles = meta.data.sheets.map(s => s.properties.title);
-  return cachedSheetTitles;
+  return meta.data.sheets.map(s => s.properties.title);
 }
 
 async function getMasterSheetName() {
@@ -55,7 +54,6 @@ async function createSheet(name, headerRow) {
     spreadsheetId: SPREADSHEET_ID,
     requestBody: { requests: [{ addSheet: { properties: { title: name } } }] }
   });
-  await getSheetTitles(true); // refresh cache
   if (headerRow && headerRow.length) {
     await writeRange(`${name}!A1`, [headerRow]);
   }
