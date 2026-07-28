@@ -344,9 +344,9 @@ async function updateStatus(rowId, status, userId) {
     updates.push({ col: col.firstVerifiedAt, val: timestamp });
   }
 
-  for (const u of updates) {
-    await sheetsApi.writeRange(`${sheetName}!${colToLetter(u.col)}${rowNum}`, [[u.val]]);
-  }
+  await sheetsApi.batchWriteRanges(
+    updates.map(u => ({ range: `${sheetName}!${colToLetter(u.col)}${rowNum}`, values: [[u.val]] }))
+  );
 
   const studentName = col.name > -1 ? String(row[col.name] || '') : '';
   await logActivity(verifierName, status === 'done' ? 'Verified' : 'Marked Pending', `${studentName} (row ${rowNum})`);
@@ -386,17 +386,18 @@ async function adminLockAllDone(password, actor) {
   let col = detectColumns(headers);
   col = await ensureExtraColumns(sheetName, headers, col);
 
-  let count = 0;
+  const pendingUpdates = [];
   for (let r = 1; r < data.length; r++) {
     const row = data[r];
     const statusVal = String(row[col.status] || '').trim().toLowerCase();
     const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true' || statusVal === 'completed' || statusVal === 'verified');
     const isLocked = String(row[col.lock] || '').trim().toLowerCase() === 'yes';
     if (isDone && !isLocked) {
-      await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.lock)}${r + 1}`, [['Yes']]);
-      count++;
+      pendingUpdates.push({ range: `${sheetName}!${colToLetter(col.lock)}${r + 1}`, values: [['Yes']] });
     }
   }
+  await sheetsApi.batchWriteRanges(pendingUpdates);
+  const count = pendingUpdates.length;
 
   await logActivity(actor || 'Admin', 'Bulk Lock Verified', `Locked ${count} record(s)`);
   return { ok: true, count };
@@ -739,6 +740,7 @@ async function importVerificationUpdates(uploadedHeaders, uploadedRows, adminPas
 
   let updated = 0, alreadyDone = 0;
   const notFoundRows = [];
+  const pendingUpdates = [];
 
   for (const uRow of uploadedRows) {
     const name = uploadCol.name > -1 ? String(uRow[uploadCol.name] || '').trim() : '';
@@ -763,16 +765,18 @@ async function importVerificationUpdates(uploadedHeaders, uploadedRows, adminPas
     const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true' || statusVal === 'completed' || statusVal === 'verified');
     if (isDone) { alreadyDone++; continue; }
 
-    await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.status)}${matchedRowNum}`, [['Done']]);
-    await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.lock)}${matchedRowNum}`, [['Yes']]);
-    await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.verifiedBy)}${matchedRowNum}`, [['Verification Import']]);
-    await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.verifiedAt)}${matchedRowNum}`, [[timestamp]]);
+    pendingUpdates.push({ range: `${sheetName}!${colToLetter(col.status)}${matchedRowNum}`, values: [['Done']] });
+    pendingUpdates.push({ range: `${sheetName}!${colToLetter(col.lock)}${matchedRowNum}`, values: [['Yes']] });
+    pendingUpdates.push({ range: `${sheetName}!${colToLetter(col.verifiedBy)}${matchedRowNum}`, values: [['Verification Import']] });
+    pendingUpdates.push({ range: `${sheetName}!${colToLetter(col.verifiedAt)}${matchedRowNum}`, values: [[timestamp]] });
     if (!String(rowData[col.firstVerifiedBy] || '').trim()) {
-      await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.firstVerifiedBy)}${matchedRowNum}`, [['Verification Import']]);
-      await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.firstVerifiedAt)}${matchedRowNum}`, [[timestamp]]);
+      pendingUpdates.push({ range: `${sheetName}!${colToLetter(col.firstVerifiedBy)}${matchedRowNum}`, values: [['Verification Import']] });
+      pendingUpdates.push({ range: `${sheetName}!${colToLetter(col.firstVerifiedAt)}${matchedRowNum}`, values: [[timestamp]] });
     }
     updated++;
   }
+
+  await sheetsApi.batchWriteRanges(pendingUpdates);
 
   await logActivity(actor || 'Admin', 'Imported Verification Updates', `${updated} updated, ${alreadyDone} already done, ${notFoundRows.length} not found`);
   return { ok: true, updated, alreadyDone, notFoundRows };
