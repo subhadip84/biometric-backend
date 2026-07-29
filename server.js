@@ -24,7 +24,7 @@ const PORT = process.env.PORT || 3000;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 app.use(cors({ origin: ALLOWED_ORIGIN }));
 
-app.use(express.text({ type: '*/*' })); // frontend sends text/plain to avoid CORS preflight
+app.use(express.text({ type: '*/*', limit: '50mb' })); // frontend sends text/plain to avoid CORS preflight; 50mb accommodates large bulk imports
 
 // ---------- Phase 1, 2, and 3 all wired in now ----------
 const API_FUNCTIONS = {
