@@ -152,6 +152,13 @@ const ALL_PERMISSION_KEYS = [
 ];
 
 function effectivePermissions(userRecord) {
+  if (userRecord.role === 'demo') {
+    if (userRecord.permissions) return userRecord.permissions;
+    const all = {};
+    ALL_PERMISSION_KEYS.forEach(k => { all[k] = true; });
+    all.deleteStudent = false; // hard restriction, also enforced server-side below
+    return all;
+  }
   if (userRecord.role !== 'admin') return {};
   if (!userRecord.permissions) {
     const all = {};
@@ -229,7 +236,7 @@ async function checkLogin(userId, password, deviceInfo) {
   return {
     ok: true,
     userId: key,
-    isAdmin: users[key].role === 'admin',
+    isAdmin: users[key].role === 'admin' || users[key].role === 'demo',
     name: displayName,
     permissions: effectivePermissions(users[key]),
     mustChangePassword: !!users[key].mustChangePassword
@@ -308,6 +315,13 @@ async function updateStatus(rowId, status, userId) {
   if (status !== 'done' && status !== 'pending') {
     return { ok: false, error: "status must be 'done' or 'pending'" };
   }
+
+  const usersForRoleCheck = await getAllUsers();
+  const callerKey = userId ? String(userId) : '';
+  if (usersForRoleCheck[callerKey] && usersForRoleCheck[callerKey].role === 'demo') {
+    return { ok: false, error: 'Demo accounts cannot mark biometric verification status.' };
+  }
+
   const sheetName = await sheetsApi.getMasterSheetName();
   const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
   const headers = data[0];
@@ -324,7 +338,7 @@ async function updateStatus(rowId, status, userId) {
   }
 
   const value = status === 'done' ? 'Done' : 'Not Done';
-  const users = await getAllUsers();
+  const users = usersForRoleCheck;
   const whoLabel = userId ? String(userId) : 'unknown';
   const verifierRole = (users[whoLabel] && users[whoLabel].role === 'admin') ? 'admin' : 'staff';
   const verifierName = (users[whoLabel] && users[whoLabel].name) ? users[whoLabel].name : whoLabel;
@@ -457,7 +471,7 @@ async function createUser(newUserId, newPassword, role, adminPassword, displayNa
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
 
-  role = (role === 'admin') ? 'admin' : 'staff';
+  role = (role === 'admin' || role === 'demo') ? role : 'staff';
   let name = (displayName && String(displayName).trim()) || '';
 
   const users = await getAllUsers();
@@ -498,9 +512,10 @@ async function createUser(newUserId, newPassword, role, adminPassword, displayNa
     school: school ? String(school).trim() : ''
   };
   if (autoGeneratePassword) userRecord.mustChangePassword = true;
-  if (role === 'admin' && permissions && typeof permissions === 'object') {
+  if ((role === 'admin' || role === 'demo') && permissions && typeof permissions === 'object') {
     const cleanPerms = {};
     ALL_PERMISSION_KEYS.forEach(k => { cleanPerms[k] = !!permissions[k]; });
+    if (role === 'demo') cleanPerms.deleteStudent = false; // hard restriction, also enforced in deleteStudent()
     userRecord.permissions = cleanPerms;
   }
 
@@ -510,12 +525,17 @@ async function createUser(newUserId, newPassword, role, adminPassword, displayNa
   return { ok: true, userId: key, generatedPassword: autoGeneratePassword ? finalPassword : null };
 }
 
-async function deleteUser(targetUserId, adminPassword, actor) {
+async function deleteUser(targetUserId, adminPassword, actor, actorUserId) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
   const key = String(targetUserId || '').trim();
   const users = await getAllUsers();
   if (!key || !users.hasOwnProperty(key)) return { ok: false, error: 'Unknown account.' };
+
+  if (actorUserId && users[actorUserId] && users[actorUserId].role === 'demo') {
+    return { ok: false, error: 'Demo accounts cannot delete user accounts.' };
+  }
+
   delete users[key];
   await writeAllUsers(users);
   await logActivity(actor || 'Admin', 'User Deleted', key);
@@ -529,7 +549,7 @@ async function updateUserDetails(targetUserId, newName, newRole, permissions, ad
   const users = await getAllUsers();
   if (!key || !users.hasOwnProperty(key)) return { ok: false, error: 'Unknown account.' };
 
-  const role = (newRole === 'admin') ? 'admin' : 'staff';
+  const role = (newRole === 'admin' || newRole === 'demo') ? newRole : 'staff';
   if (users[key].role === 'admin' && role === 'staff') {
     const adminCount = Object.keys(users).filter(k => users[k].role === 'admin').length;
     if (adminCount <= 1) return { ok: false, error: 'Cannot demote the only remaining admin account to staff.' };
@@ -546,9 +566,10 @@ async function updateUserDetails(targetUserId, newName, newRole, permissions, ad
   users[key].email = email ? String(email).trim() : '';
   users[key].school = school ? String(school).trim() : '';
 
-  if (role === 'admin') {
+  if (role === 'admin' || role === 'demo') {
     const cleanPerms = {};
     ALL_PERMISSION_KEYS.forEach(k => { cleanPerms[k] = !!(permissions && permissions[k]); });
+    if (role === 'demo') cleanPerms.deleteStudent = false; // hard restriction, also enforced in deleteStudent()
     users[key].permissions = cleanPerms;
   } else {
     delete users[key].permissions;
@@ -606,9 +627,16 @@ async function changeAdminPassword(currentPassword, newPassword, actor) {
   return { ok: true };
 }
 
-async function deleteStudent(rowId, adminPassword, actor) {
+async function deleteStudent(rowId, adminPassword, actor, actorUserId) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+
+  if (actorUserId) {
+    const users = await getAllUsers();
+    if (users[actorUserId] && users[actorUserId].role === 'demo') {
+      return { ok: false, error: 'Demo accounts cannot delete student records.' };
+    }
+  }
 
   const sheetName = await sheetsApi.getMasterSheetName();
   const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
