@@ -94,7 +94,7 @@ async function ensureExtraColumns(sheetName, headers, col) {
 
 // ---------- User Accounts ----------
 
-const USER_HEADERS = ['User ID', 'Password', 'Role', 'Name', 'Mobile No', 'Email', 'School', 'Permissions (JSON)', 'Must Change Password'];
+const USER_HEADERS = ['User ID', 'Password', 'Role', 'Name', 'Mobile No', 'Email', 'School', 'Permissions (JSON)', 'Must Change Password', 'Demo Welcome Shown'];
 const DEFAULT_USERS = {
   admin: { password: 'Akc@123', role: 'admin', name: 'Admin' },
   staff1: { password: 'Adamas@123', role: 'staff', name: 'Staff1' }
@@ -102,7 +102,7 @@ const DEFAULT_USERS = {
 
 async function getAllUsers() {
   await sheetsApi.ensureSheet(sheetsApi.USER_SHEET_NAME, USER_HEADERS);
-  const rows = await sheetsApi.readRange(`${sheetsApi.USER_SHEET_NAME}!A2:I`);
+  const rows = await sheetsApi.readRange(`${sheetsApi.USER_SHEET_NAME}!A2:J`);
   if (!rows.length) {
     await writeAllUsers(DEFAULT_USERS);
     return JSON.parse(JSON.stringify(DEFAULT_USERS));
@@ -124,6 +124,7 @@ async function getAllUsers() {
       try { record.permissions = JSON.parse(permsJson); } catch (e) { /* ignore malformed */ }
     }
     if (String(row[8] || '').trim().toLowerCase() === 'yes') record.mustChangePassword = true;
+    if (String(row[9] || '').trim().toLowerCase() === 'yes') record.demoWelcomeShown = true;
     users[key] = record;
   });
   return users;
@@ -131,7 +132,7 @@ async function getAllUsers() {
 
 async function writeAllUsers(usersObj) {
   await sheetsApi.ensureSheet(sheetsApi.USER_SHEET_NAME, USER_HEADERS);
-  await sheetsApi.clearRange(`${sheetsApi.USER_SHEET_NAME}!A2:I`);
+  await sheetsApi.clearRange(`${sheetsApi.USER_SHEET_NAME}!A2:J`);
   const keys = Object.keys(usersObj);
   if (!keys.length) return;
   const rows = keys.map(key => {
@@ -139,7 +140,8 @@ async function writeAllUsers(usersObj) {
     return [
       key, u.password, u.role, u.name || '', u.mobile || '', u.email || '', u.school || '',
       u.permissions ? JSON.stringify(u.permissions) : '',
-      u.mustChangePassword ? 'Yes' : ''
+      u.mustChangePassword ? 'Yes' : '',
+      u.demoWelcomeShown ? 'Yes' : ''
     ];
   });
   await sheetsApi.writeRange(`${sheetsApi.USER_SHEET_NAME}!A2`, rows);
@@ -233,13 +235,23 @@ async function checkLogin(userId, password, deviceInfo) {
   }
   const displayName = users[key].name || capitalizeFirst(key);
   await logActivity(displayName, 'Login Successful', `${key} (${users[key].role})${device}`);
+
+  let showDemoWelcome = false;
+  if (users[key].role === 'demo' && !users[key].demoWelcomeShown) {
+    showDemoWelcome = true;
+    users[key].demoWelcomeShown = true;
+    await writeAllUsers(users);
+  }
+
   return {
     ok: true,
     userId: key,
     isAdmin: users[key].role === 'admin' || users[key].role === 'demo',
+    isDemo: users[key].role === 'demo',
     name: displayName,
     permissions: effectivePermissions(users[key]),
-    mustChangePassword: !!users[key].mustChangePassword
+    mustChangePassword: !!users[key].mustChangePassword,
+    showDemoWelcome
   };
 }
 
