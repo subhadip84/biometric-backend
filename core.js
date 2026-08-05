@@ -161,7 +161,11 @@ function effectivePermissions(userRecord) {
     all.deleteStudent = false; // hard restriction, also enforced server-side below
     return all;
   }
-  if (userRecord.role !== 'admin') return {};
+  if (userRecord.role !== 'admin') {
+    // Staff normally has no permissions, but hostelAccess can be individually
+    // delegated to a staff account without promoting them to admin/demo.
+    return { hostelAccess: !!(userRecord.permissions && userRecord.permissions.hostelAccess) };
+  }
   if (!userRecord.permissions) {
     const all = {};
     ALL_PERMISSION_KEYS.forEach(k => { all[k] = true; });
@@ -529,6 +533,8 @@ async function createUser(newUserId, newPassword, role, adminPassword, displayNa
     ALL_PERMISSION_KEYS.forEach(k => { cleanPerms[k] = !!permissions[k]; });
     if (role === 'demo') cleanPerms.deleteStudent = false; // hard restriction, also enforced in deleteStudent()
     userRecord.permissions = cleanPerms;
+  } else if (role === 'staff' && permissions && typeof permissions === 'object') {
+    userRecord.permissions = { hostelAccess: !!permissions.hostelAccess };
   }
 
   users[key] = userRecord;
@@ -583,6 +589,8 @@ async function updateUserDetails(targetUserId, newName, newRole, permissions, ad
     ALL_PERMISSION_KEYS.forEach(k => { cleanPerms[k] = !!(permissions && permissions[k]); });
     if (role === 'demo') cleanPerms.deleteStudent = false; // hard restriction, also enforced in deleteStudent()
     users[key].permissions = cleanPerms;
+  } else if (role === 'staff') {
+    users[key].permissions = { hostelAccess: !!(permissions && permissions.hostelAccess) };
   } else {
     delete users[key].permissions;
   }
