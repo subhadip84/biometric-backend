@@ -1183,6 +1183,34 @@ async function adminUnlockHostel(rowId, password, actor) {
   return { ok: true };
 }
 
+async function deleteHostelStudent(rowId, adminPassword, actor, actorUserId) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+
+  if (actorUserId) {
+    const users = await getAllUsers();
+    if (users[actorUserId] && users[actorUserId].role === 'demo') {
+      return { ok: false, error: 'Demo accounts cannot delete student records.' };
+    }
+  }
+
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const rowNum = parseInt(String(rowId).replace('hrow', ''), 10);
+  if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid record id.' };
+
+  const row = data[rowNum - 1] || [];
+  const name = col['studentname'] > -1 ? String(row[col['studentname']] || '') : '';
+  const appNo = col['applicationno'] > -1 ? String(row[col['applicationno']] || '') : '';
+
+  await sheetsApi.deleteRow(HOSTEL_SHEET_NAME, rowNum);
+  await logActivity(actor || 'Admin', 'Hostel Student Deleted', `${name} (App No: ${appNo})`);
+  return { ok: true };
+}
+
 async function exportHostelAsCsv(statusFilter) {
   const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
   if (!data.length) return { ok: false, error: 'Hostel data is empty.' };
@@ -1336,6 +1364,6 @@ module.exports = {
   logSessionIp, logSessionEnd,
   exportRosterAsCsv,
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
-  getHostelData, updateHostelStatus, adminUnlockHostel, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv,
+  getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo
 };
