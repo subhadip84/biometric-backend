@@ -1023,14 +1023,16 @@ const HOSTEL_BASE_HEADERS = [
 function detectHostelColumns(headers) {
   const col = {};
   headers.forEach((h, i) => { col[normalize(h)] = i; });
-  let statusCol = -1, lockCol = -1;
+  let statusCol = -1, lockCol = -1, verifiedAtCol = -1;
   headers.forEach((h, i) => {
     const n = normalize(h);
     if (n.indexOf('facecapture') !== -1 || n === 'status') statusCol = i;
     if (n === 'locked') lockCol = i;
+    if (n.indexOf('verifiedat') !== -1) verifiedAtCol = i;
   });
   col.status = statusCol;
   col.lock = lockCol;
+  col.verifiedAt = verifiedAtCol;
   return col;
 }
 
@@ -1038,6 +1040,7 @@ async function ensureHostelExtraColumns(headers, col) {
   const additions = [];
   if (col.status === -1) { col.status = headers.length + additions.length; additions.push('Face Capture Status'); }
   if (col.lock === -1) { col.lock = headers.length + additions.length; additions.push('Locked'); }
+  if (col.verifiedAt === -1) { col.verifiedAt = headers.length + additions.length; additions.push('Verified At'); }
   if (additions.length) {
     await sheetsApi.writeRange(`${HOSTEL_SHEET_NAME}!${colToLetter(headers.length)}1`, [additions]);
   }
@@ -1079,7 +1082,8 @@ async function getHostelData() {
       roomNo: String(row[col['roomno']] || ''),
       foodCoupon: String(row[col['foodcoupon']] || ''),
       status: isDone ? 'done' : 'pending',
-      locked: isLocked
+      locked: isLocked,
+      verifiedAt: String(row[col.verifiedAt] || '')
     });
   }
   return { ok: true, students };
@@ -1109,9 +1113,11 @@ async function updateHostelStatus(rowId, status, userId) {
   }
 
   const value = status === 'done' ? 'Done' : 'Not Done';
+  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
   await sheetsApi.batchWriteRanges([
     { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.status)}${rowNum}`, values: [[value]] },
-    { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.lock)}${rowNum}`, values: [['Yes']] }
+    { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.lock)}${rowNum}`, values: [['Yes']] },
+    { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.verifiedAt)}${rowNum}`, values: [[timestamp]] }
   ]);
 
   const name = col['studentname'] > -1 ? String(row[col['studentname']] || '') : '';
@@ -1158,6 +1164,24 @@ async function exportHostelAsCsv(statusFilter) {
   }
   const csvText = rows.map(row => row.map(csvEscape).join(',')).join('\r\n');
   return { ok: true, csv: csvText, rowCount: rows.length - 1, filename: `hostel_facecapture_${Date.now()}.csv` };
+}
+
+async function exportHostelVerifiedTodayAsCsv() {
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  if (!data.length) return { ok: false, error: 'Hostel data is empty.' };
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const rows = [headers];
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    const verifiedAt = String(row[col.verifiedAt] || '');
+    if (verifiedAt.indexOf(todayStr) === 0) rows.push(row);
+  }
+  const csvText = rows.map(row => row.map(csvEscape).join(',')).join('\r\n');
+  return { ok: true, csv: csvText, rowCount: rows.length - 1, filename: `hostel_verified_today_${Date.now()}.csv` };
 }
 
 async function importNewHostelData(uploadedHeaders, uploadedRows, adminPassword, actor) {
@@ -1272,6 +1296,6 @@ module.exports = {
   logSessionIp, logSessionEnd,
   exportRosterAsCsv,
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
-  getHostelData, updateHostelStatus, adminUnlockHostel, exportHostelAsCsv,
+  getHostelData, updateHostelStatus, adminUnlockHostel, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv,
   importNewHostelData, importHostelVerificationUpdates
 };
