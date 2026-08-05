@@ -219,7 +219,7 @@ async function getActivityLog(limit) {
   const recent = rows.slice(-maxRows).reverse();
   return {
     ok: true,
-    entries: recent.map(r => ({ timestamp: r[0] || '', actor: r[1] || '', action: r[2] || '', details: r[3] || '' }))
+    entries: recent.map(r => ({ timestamp: formatUtcTimestampAsIndiaTimeCompact(r[0]), actor: r[1] || '', action: r[2] || '', details: r[3] || '' }))
   };
 }
 
@@ -1009,6 +1009,21 @@ function formatUtcTimestampAsIndiaTime(utcTimestampStr) {
     timeZone: 'Asia/Kolkata', year: 'numeric', month: 'short', day: '2-digit',
     hour: '2-digit', minute: '2-digit', hour12: true
   }).format(utcDate);
+}
+
+// Compact variant matching the Activity Log's dense "YYYY-MM-DD HH:MM:SS"
+// style, just with the correct India-time offset applied.
+function formatUtcTimestampAsIndiaTimeCompact(utcTimestampStr) {
+  if (!utcTimestampStr) return '';
+  const utcDate = new Date(utcTimestampStr.replace(' ', 'T') + 'Z');
+  if (isNaN(utcDate.getTime())) return utcTimestampStr;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+  }).formatToParts(utcDate);
+  const get = type => parts.find(p => p.type === type).value;
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`;
 }
 
 async function getLastHostelImportInfo() {
