@@ -66,6 +66,7 @@ const API_FUNCTIONS = {
   getHostelData: core.getHostelData,
   updateHostelStatus: core.updateHostelStatus,
   adminUnlockHostel: core.adminUnlockHostel,
+  deleteHostelStudent: core.deleteHostelStudent,
   exportHostelAsCsv: core.exportHostelAsCsv,
   exportHostelVerifiedTodayAsCsv: core.exportHostelVerifiedTodayAsCsv,
   importNewHostelData: core.importNewHostelData,
