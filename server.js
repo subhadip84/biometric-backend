@@ -67,6 +67,7 @@ const API_FUNCTIONS = {
   updateHostelStatus: core.updateHostelStatus,
   adminUnlockHostel: core.adminUnlockHostel,
   exportHostelAsCsv: core.exportHostelAsCsv,
+  exportHostelVerifiedTodayAsCsv: core.exportHostelVerifiedTodayAsCsv,
   importNewHostelData: core.importNewHostelData,
   importHostelVerificationUpdates: core.importHostelVerificationUpdates,
   triggerBackupNow: async () => { await runDailyBackup(); return { ok: true, message: 'Backup triggered.' }; }
