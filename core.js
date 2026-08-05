@@ -998,6 +998,31 @@ async function getLastImportInfo() {
   return { ok: true, count: 0, timestamp: null };
 }
 
+// The Activity Log stores timestamps in UTC (matching every other timestamp
+// in this app); this reformats one as a readable India-time string, for
+// the hostel "fresh upload" display specifically.
+function formatUtcTimestampAsIndiaTime(utcTimestampStr) {
+  if (!utcTimestampStr) return null;
+  const utcDate = new Date(utcTimestampStr.replace(' ', 'T') + 'Z');
+  if (isNaN(utcDate.getTime())) return utcTimestampStr;
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: 'short', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: true
+  }).format(utcDate);
+}
+
+async function getLastHostelImportInfo() {
+  const data = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:D`);
+  for (let i = data.length - 1; i >= 0; i--) {
+    if (data[i][2] === 'Imported New Hostel Data') {
+      const match = String(data[i][3] || '').match(/^(\d+)\s+added/);
+      const count = match ? parseInt(match[1], 10) : 0;
+      return { ok: true, count, timestamp: formatUtcTimestampAsIndiaTime(data[i][0] || null) };
+    }
+  }
+  return { ok: true, count: 0, timestamp: null };
+}
+
 async function getTodayImportCount() {
   const info = await getLastImportInfo();
   const todayStr = new Date().toISOString().slice(0, 10);
@@ -1297,5 +1322,5 @@ module.exports = {
   exportRosterAsCsv,
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
   getHostelData, updateHostelStatus, adminUnlockHostel, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv,
-  importNewHostelData, importHostelVerificationUpdates
+  importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo
 };
