@@ -63,6 +63,7 @@ const API_FUNCTIONS = {
   getLastImportInfo: core.getLastImportInfo,
   getTodayImportCount: core.getTodayImportCount,
   getLastImportTimestamp: core.getLastImportTimestamp,
+  getHostelData: core.getHostelData,
   triggerBackupNow: async () => { await runDailyBackup(); return { ok: true, message: 'Backup triggered.' }; }
 };
 
