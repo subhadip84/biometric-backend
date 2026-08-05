@@ -64,6 +64,11 @@ const API_FUNCTIONS = {
   getTodayImportCount: core.getTodayImportCount,
   getLastImportTimestamp: core.getLastImportTimestamp,
   getHostelData: core.getHostelData,
+  updateHostelStatus: core.updateHostelStatus,
+  adminUnlockHostel: core.adminUnlockHostel,
+  exportHostelAsCsv: core.exportHostelAsCsv,
+  importNewHostelData: core.importNewHostelData,
+  importHostelVerificationUpdates: core.importHostelVerificationUpdates,
   triggerBackupNow: async () => { await runDailyBackup(); return { ok: true, message: 'Backup triggered.' }; }
 };
 
