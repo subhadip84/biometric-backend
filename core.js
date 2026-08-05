@@ -150,7 +150,7 @@ async function writeAllUsers(usersObj) {
 const ALL_PERMISSION_KEYS = [
   'viewSummary', 'downloadCsv', 'unlockRecords', 'lockAll', 'viewActivityLog',
   'composeMessage', 'importStudents', 'importVerification', 'resetPasswords',
-  'manageUsers', 'deleteStudent'
+  'manageUsers', 'deleteStudent', 'hostelAccess'
 ];
 
 function effectivePermissions(userRecord) {
@@ -1004,6 +1004,46 @@ async function getLastImportTimestamp() {
   return { ok: true, timestamp: info.timestamp };
 }
 
+// ---------- Hostel Data lookup ----------
+
+const HOSTEL_SHEET_NAME = 'Hostel Data';
+
+async function getHostelData() {
+  await sheetsApi.ensureSheet(HOSTEL_SHEET_NAME, [
+    'S#', 'RegistrationNo', 'ApplicationNo', 'MachineCode', 'SiteCode', 'StudentName',
+    'Course', 'AdmissionType', 'Gender', 'HostelName', 'RoomNo', 'FoodCoupon'
+  ]);
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  if (!data.length) return { ok: true, students: [] };
+
+  const headers = data[0];
+  const col = {};
+  headers.forEach((h, i) => { col[normalize(h)] = i; });
+
+  const students = [];
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    const studentName = row[col['studentname']] || '';
+    const regNo = row[col['registrationno']] || '';
+    const appNo = row[col['applicationno']] || '';
+    if (!studentName && !regNo && !appNo) continue;
+    students.push({
+      registrationNo: String(regNo || ''),
+      applicationNo: String(appNo || ''),
+      machineCode: String(row[col['machinecode']] || ''),
+      siteCode: String(row[col['sitecode']] || ''),
+      studentName: String(studentName || ''),
+      course: String(row[col['course']] || ''),
+      admissionType: String(row[col['admissiontype']] || ''),
+      gender: String(row[col['gender']] || ''),
+      hostelName: String(row[col['hostelname']] || ''),
+      roomNo: String(row[col['roomno']] || ''),
+      foodCoupon: String(row[col['foodcoupon']] || '')
+    });
+  }
+  return { ok: true, students };
+}
+
 module.exports = {
   normalize, detectColumns, colToLetter, ensureExtraColumns,
   getAllUsers, writeAllUsers, effectivePermissions, capitalizeFirst, ALL_PERMISSION_KEYS,
@@ -1019,5 +1059,6 @@ module.exports = {
   logHelpQuestion, getHelpQuestionStats,
   logSessionIp, logSessionEnd,
   exportRosterAsCsv,
-  getLastImportInfo, getTodayImportCount, getLastImportTimestamp
+  getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
+  getHostelData
 };
