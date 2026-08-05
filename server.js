@@ -70,6 +70,7 @@ const API_FUNCTIONS = {
   exportHostelVerifiedTodayAsCsv: core.exportHostelVerifiedTodayAsCsv,
   importNewHostelData: core.importNewHostelData,
   importHostelVerificationUpdates: core.importHostelVerificationUpdates,
+  getLastHostelImportInfo: core.getLastHostelImportInfo,
   triggerBackupNow: async () => { await runDailyBackup(); return { ok: true, message: 'Backup triggered.' }; }
 };
 
