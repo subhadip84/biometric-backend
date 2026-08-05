@@ -1012,21 +1012,46 @@ async function getLastImportTimestamp() {
   return { ok: true, timestamp: info.timestamp };
 }
 
-// ---------- Hostel Data lookup ----------
+// ---------- Hostel Data: Face Capture verification system ----------
 
 const HOSTEL_SHEET_NAME = 'Hostel Data';
+const HOSTEL_BASE_HEADERS = [
+  'S#', 'RegistrationNo', 'ApplicationNo', 'MachineCode', 'SiteCode', 'StudentName',
+  'Course', 'AdmissionType', 'Gender', 'HostelName', 'RoomNo', 'FoodCoupon'
+];
+
+function detectHostelColumns(headers) {
+  const col = {};
+  headers.forEach((h, i) => { col[normalize(h)] = i; });
+  let statusCol = -1, lockCol = -1;
+  headers.forEach((h, i) => {
+    const n = normalize(h);
+    if (n.indexOf('facecapture') !== -1 || n === 'status') statusCol = i;
+    if (n === 'locked') lockCol = i;
+  });
+  col.status = statusCol;
+  col.lock = lockCol;
+  return col;
+}
+
+async function ensureHostelExtraColumns(headers, col) {
+  const additions = [];
+  if (col.status === -1) { col.status = headers.length + additions.length; additions.push('Face Capture Status'); }
+  if (col.lock === -1) { col.lock = headers.length + additions.length; additions.push('Locked'); }
+  if (additions.length) {
+    await sheetsApi.writeRange(`${HOSTEL_SHEET_NAME}!${colToLetter(headers.length)}1`, [additions]);
+  }
+  return col;
+}
 
 async function getHostelData() {
-  await sheetsApi.ensureSheet(HOSTEL_SHEET_NAME, [
-    'S#', 'RegistrationNo', 'ApplicationNo', 'MachineCode', 'SiteCode', 'StudentName',
-    'Course', 'AdmissionType', 'Gender', 'HostelName', 'RoomNo', 'FoodCoupon'
-  ]);
+  await sheetsApi.ensureSheet(HOSTEL_SHEET_NAME, HOSTEL_BASE_HEADERS);
   const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
   if (!data.length) return { ok: true, students: [] };
 
   const headers = data[0];
-  const col = {};
-  headers.forEach((h, i) => { col[normalize(h)] = i; });
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
 
   const students = [];
   for (let r = 1; r < data.length; r++) {
@@ -1035,7 +1060,13 @@ async function getHostelData() {
     const regNo = row[col['registrationno']] || '';
     const appNo = row[col['applicationno']] || '';
     if (!studentName && !regNo && !appNo) continue;
+
+    const statusVal = String(row[col.status] || '').trim().toLowerCase();
+    const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true');
+    const isLocked = String(row[col.lock] || '').trim().toLowerCase() === 'yes';
+
     students.push({
+      id: 'hrow' + (r + 1),
       registrationNo: String(regNo || ''),
       applicationNo: String(appNo || ''),
       machineCode: String(row[col['machinecode']] || ''),
@@ -1046,10 +1077,183 @@ async function getHostelData() {
       gender: String(row[col['gender']] || ''),
       hostelName: String(row[col['hostelname']] || ''),
       roomNo: String(row[col['roomno']] || ''),
-      foodCoupon: String(row[col['foodcoupon']] || '')
+      foodCoupon: String(row[col['foodcoupon']] || ''),
+      status: isDone ? 'done' : 'pending',
+      locked: isLocked
     });
   }
   return { ok: true, students };
+}
+
+async function updateHostelStatus(rowId, status, userId) {
+  if (status !== 'done' && status !== 'pending') {
+    return { ok: false, error: "status must be 'done' or 'pending'" };
+  }
+  const users = await getAllUsers();
+  const callerKey = userId ? String(userId) : '';
+  if (users[callerKey] && users[callerKey].role === 'demo') {
+    return { ok: false, error: 'Demo accounts cannot mark face capture status.' };
+  }
+
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const rowNum = parseInt(String(rowId).replace('hrow', ''), 10);
+  if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid record id.' };
+
+  const row = data[rowNum - 1] || [];
+  if (String(row[col.lock] || '').trim().toLowerCase() === 'yes') {
+    return { ok: false, error: 'This record is locked. An admin needs to unlock it before it can be changed.' };
+  }
+
+  const value = status === 'done' ? 'Done' : 'Not Done';
+  await sheetsApi.batchWriteRanges([
+    { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.status)}${rowNum}`, values: [[value]] },
+    { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.lock)}${rowNum}`, values: [['Yes']] }
+  ]);
+
+  const name = col['studentname'] > -1 ? String(row[col['studentname']] || '') : '';
+  const actorName = (users[callerKey] && users[callerKey].name) || callerKey || 'unknown';
+  await logActivity(actorName, status === 'done' ? 'Hostel Face Capture Verified' : 'Hostel Marked Pending', `${name} (row ${rowNum})`);
+  return { ok: true };
+}
+
+async function adminUnlockHostel(rowId, password, actor) {
+  const currentAdminPassword = await getAdminPassword();
+  if (password !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const rowNum = parseInt(String(rowId).replace('hrow', ''), 10);
+  if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid record id.' };
+
+  await sheetsApi.writeRange(`${HOSTEL_SHEET_NAME}!${colToLetter(col.lock)}${rowNum}`, [['No']]);
+  await logActivity(actor || 'Admin', 'Hostel Record Unlocked', `row ${rowNum}`);
+  return { ok: true };
+}
+
+async function exportHostelAsCsv(statusFilter) {
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  if (!data.length) return { ok: false, error: 'Hostel data is empty.' };
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const wantStatus = statusFilter && statusFilter !== 'all' ? statusFilter : null;
+  const rows = [headers];
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    if (wantStatus) {
+      const statusVal = String(row[col.status] || '').trim().toLowerCase();
+      const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true');
+      if (wantStatus === 'done' && !isDone) continue;
+      if (wantStatus === 'pending' && isDone) continue;
+    }
+    rows.push(row);
+  }
+  const csvText = rows.map(row => row.map(csvEscape).join(',')).join('\r\n');
+  return { ok: true, csv: csvText, rowCount: rows.length - 1, filename: `hostel_facecapture_${Date.now()}.csv` };
+}
+
+async function importNewHostelData(uploadedHeaders, uploadedRows, adminPassword, actor) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+
+  await sheetsApi.ensureSheet(HOSTEL_SHEET_NAME, HOSTEL_BASE_HEADERS);
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const uCol = {};
+  uploadedHeaders.forEach((h, i) => { uCol[normalize(h)] = i; });
+
+  const existingAppNos = new Set(), existingRegNos = new Set();
+  for (let r = 1; r < data.length; r++) {
+    const a = String(data[r][col['applicationno']] || '').trim().toLowerCase();
+    const g = String(data[r][col['registrationno']] || '').trim().toLowerCase();
+    if (a) existingAppNos.add(a);
+    if (g) existingRegNos.add(g);
+  }
+
+  const fieldMap = ['registrationno', 'applicationno', 'machinecode', 'sitecode', 'studentname', 'course', 'admissiontype', 'gender', 'hostelname', 'roomno', 'foodcoupon'];
+  const newRows = [];
+  const skipped = [];
+  uploadedRows.forEach(uRow => {
+    const appNo = uCol['applicationno'] > -1 ? String(uRow[uCol['applicationno']] || '').trim() : '';
+    const regNo = uCol['registrationno'] > -1 ? String(uRow[uCol['registrationno']] || '').trim() : '';
+    const name = uCol['studentname'] > -1 ? String(uRow[uCol['studentname']] || '').trim() : '';
+
+    if ((regNo && existingRegNos.has(regNo.toLowerCase())) || (appNo && existingAppNos.has(appNo.toLowerCase()))) {
+      skipped.push({ name, appNo, regNo, reason: 'Duplicate App No or Reg No' });
+      return;
+    }
+
+    const newRow = new Array(headers.length).fill('');
+    fieldMap.forEach(field => {
+      if (col[field] > -1 && uCol[field] > -1) newRow[col[field]] = String(uRow[uCol[field]] || '');
+    });
+    newRow[col.status] = 'Not Done';
+    newRow[col.lock] = '';
+    newRows.push(newRow);
+
+    if (regNo) existingRegNos.add(regNo.toLowerCase());
+    if (appNo) existingAppNos.add(appNo.toLowerCase());
+  });
+
+  if (newRows.length) await sheetsApi.appendRows(HOSTEL_SHEET_NAME, newRows);
+  await logActivity(actor || 'Admin', 'Imported New Hostel Data', `${newRows.length} added, ${skipped.length} skipped as duplicates`);
+  return { ok: true, added: newRows.length, skippedRows: skipped };
+}
+
+async function importHostelVerificationUpdates(uploadedHeaders, uploadedRows, adminPassword, actor) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const uCol = {};
+  uploadedHeaders.forEach((h, i) => { uCol[normalize(h)] = i; });
+
+  let updated = 0, alreadyDone = 0;
+  const notFoundRows = [];
+  const pendingUpdates = [];
+
+  uploadedRows.forEach(uRow => {
+    const appNo = uCol['applicationno'] > -1 ? String(uRow[uCol['applicationno']] || '').trim() : '';
+    const regNo = uCol['registrationno'] > -1 ? String(uRow[uCol['registrationno']] || '').trim() : '';
+    const name = uCol['studentname'] > -1 ? String(uRow[uCol['studentname']] || '').trim() : '';
+
+    let matchedRowNum = -1;
+    for (let r = 1; r < data.length; r++) {
+      const rReg = String(data[r][col['registrationno']] || '').trim().toLowerCase();
+      const rApp = String(data[r][col['applicationno']] || '').trim().toLowerCase();
+      if (regNo && rReg === regNo.toLowerCase()) { matchedRowNum = r + 1; break; }
+      if (appNo && rApp === appNo.toLowerCase()) { matchedRowNum = r + 1; break; }
+    }
+    if (matchedRowNum === -1) { notFoundRows.push({ name, appNo, regNo }); return; }
+
+    const rowData = data[matchedRowNum - 1];
+    const statusVal = String(rowData[col.status] || '').trim().toLowerCase();
+    const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true');
+    if (isDone) { alreadyDone++; return; }
+
+    pendingUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.status)}${matchedRowNum}`, values: [['Done']] });
+    pendingUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.lock)}${matchedRowNum}`, values: [['Yes']] });
+    updated++;
+  });
+
+  await sheetsApi.batchWriteRanges(pendingUpdates);
+  await logActivity(actor || 'Admin', 'Imported Hostel Face Capture Updates', `${updated} updated, ${alreadyDone} already done, ${notFoundRows.length} not found`);
+  return { ok: true, updated, alreadyDone, notFoundRows };
 }
 
 module.exports = {
@@ -1068,5 +1272,6 @@ module.exports = {
   logSessionIp, logSessionEnd,
   exportRosterAsCsv,
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
-  getHostelData
+  getHostelData, updateHostelStatus, adminUnlockHostel, exportHostelAsCsv,
+  importNewHostelData, importHostelVerificationUpdates
 };
