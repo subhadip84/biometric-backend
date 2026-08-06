@@ -363,7 +363,10 @@ async function updateStatus(rowId, status, userId) {
   const verifierRole = (users[whoLabel] && users[whoLabel].role === 'admin') ? 'admin' : 'staff';
   const verifierName = (users[whoLabel] && users[whoLabel].name) ? users[whoLabel].name : whoLabel;
   const storedVerifiedBy = verifierName + (verifierRole === 'admin' ? ' [Admin]' : '');
-  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  // Prefixed with ' so Google Sheets stores this as literal text rather than
+  // auto-converting to a native date, which silently strips zero-padding
+  // from single-digit hours on read-back and breaks our IST conversion.
+  const timestamp = "'" + new Date().toISOString().replace('T', ' ').slice(0, 19);
 
   const updates = [
     { col: col.status, val: value },
@@ -788,7 +791,7 @@ async function importVerificationUpdates(uploadedHeaders, uploadedRows, adminPas
   col = await ensureExtraColumns(sheetName, headers, col);
 
   const uploadCol = detectImportColumns(uploadedHeaders);
-  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const timestamp = "'" + new Date().toISOString().replace('T', ' ').slice(0, 19);
 
   let updated = 0, alreadyDone = 0;
   const notFoundRows = [];
@@ -1166,7 +1169,7 @@ async function updateHostelStatus(rowId, status, userId) {
   }
 
   const value = status === 'done' ? 'Done' : 'Not Done';
-  const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const timestamp = "'" + new Date().toISOString().replace('T', ' ').slice(0, 19);
   await sheetsApi.batchWriteRanges([
     { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.status)}${rowNum}`, values: [[value]] },
     { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.lock)}${rowNum}`, values: [['Yes']] },
@@ -1351,8 +1354,10 @@ async function importHostelVerificationUpdates(uploadedHeaders, uploadedRows, ad
     const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true');
     if (isDone) { alreadyDone++; return; }
 
+    const timestamp = "'" + new Date().toISOString().replace('T', ' ').slice(0, 19);
     pendingUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.status)}${matchedRowNum}`, values: [['Done']] });
     pendingUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.lock)}${matchedRowNum}`, values: [['Yes']] });
+    pendingUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.verifiedAt)}${matchedRowNum}`, values: [[timestamp]] });
     updated++;
   });
 
