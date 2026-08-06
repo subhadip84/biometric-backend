@@ -208,7 +208,11 @@ async function logActivity(actor, action, details) {
   try {
     await sheetsApi.ensureSheet(sheetsApi.ACTIVITY_LOG_SHEET_NAME, ['Timestamp', 'Actor', 'Action', 'Details']);
     const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    await sheetsApi.appendRows(sheetsApi.ACTIVITY_LOG_SHEET_NAME, [[timestamp, actor || 'unknown', action, details || '']]);
+    // Prefixed with ' so Google Sheets stores this as literal text rather
+    // than auto-converting it to a native date (which silently reformats
+    // on read-back, e.g. dropping the leading zero from single-digit
+    // hours - "04:16" becomes "4:16" - breaking our IST conversion parser).
+    await sheetsApi.appendRows(sheetsApi.ACTIVITY_LOG_SHEET_NAME, [[`'${timestamp}`, actor || 'unknown', action, details || '']]);
   } catch (e) { /* never let logging break the main action */ }
 }
 
@@ -1003,7 +1007,10 @@ async function getLastImportInfo() {
 // the hostel "fresh upload" display specifically.
 function formatUtcTimestampAsIndiaTime(utcTimestampStr) {
   if (!utcTimestampStr) return null;
-  const utcDate = new Date(utcTimestampStr.replace(' ', 'T') + 'Z');
+  const match = String(utcTimestampStr).trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{1,2}):(\d{1,2})/);
+  if (!match) return utcTimestampStr;
+  const [, y, mo, d, h, mi, s] = match.map(Number);
+  const utcDate = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
   if (isNaN(utcDate.getTime())) return utcTimestampStr;
   return new Intl.DateTimeFormat('en-IN', {
     timeZone: 'Asia/Kolkata', year: 'numeric', month: 'short', day: '2-digit',
@@ -1015,7 +1022,13 @@ function formatUtcTimestampAsIndiaTime(utcTimestampStr) {
 // style, just with the correct India-time offset applied.
 function formatUtcTimestampAsIndiaTimeCompact(utcTimestampStr) {
   if (!utcTimestampStr) return '';
-  const utcDate = new Date(utcTimestampStr.replace(' ', 'T') + 'Z');
+  // Parses components manually (rather than string-based ISO parsing) so
+  // this tolerates unpadded values too, e.g. "2026-8-6 4:16:57" - which
+  // can happen for older entries logged before dates were forced to text.
+  const match = String(utcTimestampStr).trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{1,2}):(\d{1,2})/);
+  if (!match) return utcTimestampStr;
+  const [, y, mo, d, h, mi, s] = match.map(Number);
+  const utcDate = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
   if (isNaN(utcDate.getTime())) return utcTimestampStr;
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Kolkata',
