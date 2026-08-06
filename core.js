@@ -1079,16 +1079,22 @@ const HOSTEL_BASE_HEADERS = [
 function detectHostelColumns(headers) {
   const col = {};
   headers.forEach((h, i) => { col[normalize(h)] = i; });
-  let statusCol = -1, lockCol = -1, verifiedAtCol = -1;
+  let statusCol = -1, lockCol = -1, verifiedAtCol = -1, verifiedByCol = -1, firstVerifiedByCol = -1, firstVerifiedAtCol = -1;
   headers.forEach((h, i) => {
     const n = normalize(h);
     if (n.indexOf('facecapture') !== -1 || n === 'status') statusCol = i;
     if (n === 'locked') lockCol = i;
-    if (n.indexOf('verifiedat') !== -1) verifiedAtCol = i;
+    if (n === 'firstverifiedby') firstVerifiedByCol = i;
+    else if (n === 'firstverifiedat') firstVerifiedAtCol = i;
+    else if (n.indexOf('verifiedby') !== -1) verifiedByCol = i;
+    else if (n.indexOf('verifiedat') !== -1) verifiedAtCol = i;
   });
   col.status = statusCol;
   col.lock = lockCol;
   col.verifiedAt = verifiedAtCol;
+  col.verifiedBy = verifiedByCol;
+  col.firstVerifiedBy = firstVerifiedByCol;
+  col.firstVerifiedAt = firstVerifiedAtCol;
   return col;
 }
 
@@ -1097,6 +1103,9 @@ async function ensureHostelExtraColumns(headers, col) {
   if (col.status === -1) { col.status = headers.length + additions.length; additions.push('Face Capture Status'); }
   if (col.lock === -1) { col.lock = headers.length + additions.length; additions.push('Locked'); }
   if (col.verifiedAt === -1) { col.verifiedAt = headers.length + additions.length; additions.push('Verified At'); }
+  if (col.verifiedBy === -1) { col.verifiedBy = headers.length + additions.length; additions.push('Verified By'); }
+  if (col.firstVerifiedBy === -1) { col.firstVerifiedBy = headers.length + additions.length; additions.push('First Verified By'); }
+  if (col.firstVerifiedAt === -1) { col.firstVerifiedAt = headers.length + additions.length; additions.push('First Verified At'); }
   if (additions.length) {
     await sheetsApi.writeRange(`${HOSTEL_SHEET_NAME}!${colToLetter(headers.length)}1`, [additions]);
   }
@@ -1139,7 +1148,10 @@ async function getHostelData() {
       foodCoupon: String(row[col['foodcoupon']] || ''),
       status: isDone ? 'done' : 'pending',
       locked: isLocked,
-      verifiedAt: String(row[col.verifiedAt] || '')
+      verifiedAt: String(row[col.verifiedAt] || ''),
+      verifiedBy: String(row[col.verifiedBy] || ''),
+      firstVerifiedBy: String(row[col.firstVerifiedBy] || ''),
+      firstVerifiedAt: String(row[col.firstVerifiedAt] || '')
     });
   }
   return { ok: true, students };
@@ -1170,15 +1182,32 @@ async function updateHostelStatus(rowId, status, userId) {
 
   const value = status === 'done' ? 'Done' : 'Not Done';
   const timestamp = "'" + new Date().toISOString().replace('T', ' ').slice(0, 19);
-  await sheetsApi.batchWriteRanges([
+
+  const caller = users[callerKey] || {};
+  const callerName = caller.name || callerKey || 'unknown';
+  let roleTag = '';
+  if (caller.role === 'admin') roleTag = ' [Admin]';
+  else if (caller.role === 'demo') roleTag = ' [Demo]';
+  else if (caller.role === 'staff' && caller.permissions && caller.permissions.hostelAccess) roleTag = ' [Hosteller]';
+
+  const existingFirstVerifiedBy = String(row[col.firstVerifiedBy] || '').trim();
+  const isRevision = !!existingFirstVerifiedBy; // a prior verification already exists, so this is an overturn/change, not the first-ever mark
+  const verifiedByLabel = callerName + roleTag + (isRevision ? ' (Revised)' : '');
+
+  const writes = [
     { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.status)}${rowNum}`, values: [[value]] },
     { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.lock)}${rowNum}`, values: [['Yes']] },
-    { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.verifiedAt)}${rowNum}`, values: [[timestamp]] }
-  ]);
+    { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.verifiedAt)}${rowNum}`, values: [[timestamp]] },
+    { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.verifiedBy)}${rowNum}`, values: [[verifiedByLabel]] }
+  ];
+  if (!existingFirstVerifiedBy) {
+    writes.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.firstVerifiedBy)}${rowNum}`, values: [[callerName + roleTag]] });
+    writes.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.firstVerifiedAt)}${rowNum}`, values: [[timestamp]] });
+  }
+  await sheetsApi.batchWriteRanges(writes);
 
   const name = col['studentname'] > -1 ? String(row[col['studentname']] || '') : '';
-  const actorName = (users[callerKey] && users[callerKey].name) || callerKey || 'unknown';
-  await logActivity(actorName, status === 'done' ? 'Hostel Face Capture Verified' : 'Hostel Marked Pending', `${name} (row ${rowNum})`);
+  await logActivity(callerName, status === 'done' ? 'Hostel Face Capture Verified' : 'Hostel Marked Pending', `${name} (row ${rowNum})`);
   return { ok: true };
 }
 
