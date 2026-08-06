@@ -12,6 +12,34 @@ const HEADER_CANDIDATES = {
   studentType: ['studenttype', 'type']
 };
 
+// Generates the current moment as an India-time "YYYY-MM-DD HH:MM:SS" string,
+// prefixed with ' so Google Sheets stores it as literal text (preventing
+// auto-conversion to a native date, which silently reformats on read-back).
+// Used everywhere a timestamp gets written to a sheet, so the database
+// itself always shows IST directly - no UTC-to-IST conversion needed when
+// displaying or reading these values back.
+function getISTTimestampForStorage() {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+  }).formatToParts(now);
+  const get = type => parts.find(p => p.type === type).value;
+  return "'" + `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`;
+}
+
+// Today's date in India time as "YYYY-MM-DD", for comparing against the
+// IST-based timestamps now stored directly in the database.
+function getISTTodayDateString() {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(now);
+  const get = type => parts.find(p => p.type === type).value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
 function normalize(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
@@ -207,12 +235,8 @@ async function setAdminPassword(newPassword) {
 async function logActivity(actor, action, details) {
   try {
     await sheetsApi.ensureSheet(sheetsApi.ACTIVITY_LOG_SHEET_NAME, ['Timestamp', 'Actor', 'Action', 'Details']);
-    const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-    // Prefixed with ' so Google Sheets stores this as literal text rather
-    // than auto-converting it to a native date (which silently reformats
-    // on read-back, e.g. dropping the leading zero from single-digit
-    // hours - "04:16" becomes "4:16" - breaking our IST conversion parser).
-    await sheetsApi.appendRows(sheetsApi.ACTIVITY_LOG_SHEET_NAME, [[`'${timestamp}`, actor || 'unknown', action, details || '']]);
+    const timestamp = getISTTimestampForStorage();
+    await sheetsApi.appendRows(sheetsApi.ACTIVITY_LOG_SHEET_NAME, [[timestamp, actor || 'unknown', action, details || '']]);
   } catch (e) { /* never let logging break the main action */ }
 }
 
@@ -223,7 +247,7 @@ async function getActivityLog(limit) {
   const recent = rows.slice(-maxRows).reverse();
   return {
     ok: true,
-    entries: recent.map(r => ({ timestamp: formatUtcTimestampAsIndiaTimeCompact(r[0]), actor: r[1] || '', action: r[2] || '', details: r[3] || '' }))
+    entries: recent.map(r => ({ timestamp: r[0] || '', actor: r[1] || '', action: r[2] || '', details: r[3] || '' }))
   };
 }
 
@@ -366,7 +390,7 @@ async function updateStatus(rowId, status, userId) {
   // Prefixed with ' so Google Sheets stores this as literal text rather than
   // auto-converting to a native date, which silently strips zero-padding
   // from single-digit hours on read-back and breaks our IST conversion.
-  const timestamp = "'" + new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const timestamp = getISTTimestampForStorage();
 
   const updates = [
     { col: col.status, val: value },
@@ -791,7 +815,7 @@ async function importVerificationUpdates(uploadedHeaders, uploadedRows, adminPas
   col = await ensureExtraColumns(sheetName, headers, col);
 
   const uploadCol = detectImportColumns(uploadedHeaders);
-  const timestamp = "'" + new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const timestamp = getISTTimestampForStorage();
 
   let updated = 0, alreadyDone = 0;
   const notFoundRows = [];
@@ -1048,7 +1072,7 @@ async function getLastHostelImportInfo() {
     if (data[i][2] === 'Imported New Hostel Data') {
       const match = String(data[i][3] || '').match(/^(\d+)\s+added/);
       const count = match ? parseInt(match[1], 10) : 0;
-      return { ok: true, count, timestamp: formatUtcTimestampAsIndiaTime(data[i][0] || null) };
+      return { ok: true, count, timestamp: data[i][0] || null };
     }
   }
   return { ok: true, count: 0, timestamp: null };
@@ -1056,7 +1080,7 @@ async function getLastHostelImportInfo() {
 
 async function getTodayImportCount() {
   const info = await getLastImportInfo();
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = getISTTodayDateString();
   if (info.timestamp && String(info.timestamp).indexOf(todayStr) === 0) {
     return { ok: true, count: info.count };
   }
@@ -1181,7 +1205,7 @@ async function updateHostelStatus(rowId, status, userId) {
   }
 
   const value = status === 'done' ? 'Done' : 'Not Done';
-  const timestamp = "'" + new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const timestamp = getISTTimestampForStorage();
 
   const caller = users[callerKey] || {};
   const callerName = caller.name || callerKey || 'unknown';
@@ -1286,7 +1310,7 @@ async function exportHostelVerifiedTodayAsCsv() {
   let col = detectHostelColumns(headers);
   col = await ensureHostelExtraColumns(headers, col);
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = getISTTodayDateString();
   const rows = [headers];
   for (let r = 1; r < data.length; r++) {
     const row = data[r];
@@ -1383,7 +1407,7 @@ async function importHostelVerificationUpdates(uploadedHeaders, uploadedRows, ad
     const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true');
     if (isDone) { alreadyDone++; return; }
 
-    const timestamp = "'" + new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const timestamp = getISTTimestampForStorage();
     pendingUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.status)}${matchedRowNum}`, values: [['Done']] });
     pendingUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.lock)}${matchedRowNum}`, values: [['Yes']] });
     pendingUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.verifiedAt)}${matchedRowNum}`, values: [[timestamp]] });
