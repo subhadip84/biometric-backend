@@ -64,11 +64,36 @@ async function cleanupOldBackups(drive, folderId) {
     if (file.id === mostRecent.id) continue; // never delete the latest one
     const created = new Date(file.createdTime);
     if (created < cutoff) {
-      await drive.files.update({ fileId: file.id, requestBody: { trashed: true } });
+      await drive.files.delete({ fileId: file.id }); // permanent delete, not trash - trashed files still count against storage quota
       deletedCount++;
     }
   }
   return deletedCount;
+}
+
+async function emptyTrashedBackups(drive, folderId) {
+  // One-time recovery helper: permanently deletes any already-trashed files
+  // in the backup folder, needed because the old cleanup logic only moved
+  // files to trash (which still counts against storage quota) instead of
+  // permanently deleting them. This reclaims that space immediately.
+  const res = await drive.files.list({
+    q: `'${folderId}' in parents and trashed=true`,
+    fields: 'files(id, name)',
+    spaces: 'drive'
+  });
+  const files = res.data.files || [];
+  for (const file of files) {
+    await drive.files.delete({ fileId: file.id });
+  }
+  return files.length;
+}
+
+async function runAllTrashCleanup() {
+  const drive = await getDriveClient();
+  const folderId = await getOrCreateBackupFolder(drive);
+  const count = await emptyTrashedBackups(drive, folderId);
+  await core.logActivity('System', 'Emptied Trashed Backups', `${count} file(s) permanently deleted`);
+  return { ok: true, count };
 }
 
 async function runDailyBackup() {
@@ -95,4 +120,4 @@ async function runDailyBackup() {
   }
 }
 
-module.exports = { runDailyBackup };
+module.exports = { runDailyBackup, runAllTrashCleanup };
