@@ -6,7 +6,7 @@ const express = require('express');
 const cors = require('cors');
 const core = require('./core');
 const cron = require('node-cron');
-const { runDailyBackup, runAllTrashCleanup, resetAllBackups } = require('./backup');
+const { runDailyBackup } = require('./backup');
 
 // Runs every day at 2:00 AM India time, matching the schedule the original
 // Apps Script version used. node-cron handles the timezone conversion.
@@ -72,9 +72,7 @@ const API_FUNCTIONS = {
   importNewHostelData: core.importNewHostelData,
   importHostelVerificationUpdates: core.importHostelVerificationUpdates,
   getLastHostelImportInfo: core.getLastHostelImportInfo,
-  triggerBackupNow: async () => { await runDailyBackup(); return { ok: true, message: 'Backup triggered.' }; },
-  emptyBackupTrash: async () => { return await runAllTrashCleanup(); },
-  resetAllBackups: async () => { return await resetAllBackups(); }
+  triggerBackupNow: async () => { await runDailyBackup(); return { ok: true, message: 'Backup triggered.' }; }
 };
 
 app.post('/', async (req, res) => {
