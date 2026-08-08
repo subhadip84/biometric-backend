@@ -1,11 +1,11 @@
 // backup.js — daily automatic backup of the Google Sheet, delivered as an
-// email attachment rather than a Drive file copy. This avoids the Service
-// Account's own (effectively zero) Drive storage quota entirely, since
-// exporting a spreadsheet as bytes is a read-only operation - no new file
-// is ever created in Drive, so there's nothing to run out of space for.
+// email attachment via Resend's HTTPS API (not raw SMTP - Render's free
+// tier blocks outbound SMTP ports like 587, so a plain SMTP connection
+// never completes regardless of how correct the credentials are. Resend
+// sends over regular HTTPS, same as any website request, which isn't
+// blocked).
 
 const { google } = require('googleapis');
-const nodemailer = require('nodemailer');
 const sheetsApi = require('./sheets');
 const core = require('./core');
 
@@ -24,26 +24,34 @@ async function getDriveClient() {
   return google.drive({ version: 'v3', auth: authClient });
 }
 
-function getMailTransporter() {
-  const host = (process.env.SMTP_HOST || '').trim();
-  const port = Number((process.env.SMTP_PORT || '587').trim());
-  const user = (process.env.SMTP_USER || '').trim();
-  const pass = (process.env.SMTP_PASS || '').trim();
-  if (!host || !user || !pass) {
-    throw new Error('Email backup is not configured - SMTP_HOST, SMTP_USER, and SMTP_PASS must be set in Render.');
-  }
-  return nodemailer.createTransport({
-    host, port, secure: port === 465,
-    auth: { user, pass }
+async function sendBackupEmail({ apiKey, to, subject, text, fileName, fileBuffer }) {
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: 'Biometric Verification Desk <onboarding@resend.dev>',
+      to: [to],
+      subject,
+      text,
+      attachments: [{ filename: fileName, content: fileBuffer.toString('base64') }]
+    })
   });
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Resend API error (${response.status}): ${errorBody}`);
+  }
+  return response.json();
 }
 
 async function runDailyBackup() {
   try {
+    const apiKey = (process.env.RESEND_API_KEY || '').trim();
     const recipient = (process.env.BACKUP_EMAIL_TO || '').trim();
-    if (!recipient) {
-      throw new Error('BACKUP_EMAIL_TO is not set in Render - no address to send the backup to.');
-    }
+    if (!apiKey) throw new Error('RESEND_API_KEY is not set in Render.');
+    if (!recipient) throw new Error('BACKUP_EMAIL_TO is not set in Render - no address to send the backup to.');
 
     const drive = await getDriveClient();
     const spreadsheetMeta = await drive.files.get({ fileId: sheetsApi.SPREADSHEET_ID, fields: 'name' });
@@ -61,13 +69,13 @@ async function runDailyBackup() {
     const dateStr = getIndiaTimestamp(now);
     const fileName = `${sheetName} - Backup ${dateStr}.xlsx`;
 
-    const transporter = getMailTransporter();
-    await transporter.sendMail({
-      from: (process.env.SMTP_USER || '').trim(),
+    await sendBackupEmail({
+      apiKey,
       to: recipient,
       subject: `Daily Backup - ${sheetName} - ${dateStr}`,
       text: `Attached is the daily backup of "${sheetName}", generated ${dateStr} (India time).`,
-      attachments: [{ filename: fileName, content: fileBuffer }]
+      fileName,
+      fileBuffer
     });
 
     await core.logActivity('System', 'Daily Backup Completed', `${fileName} emailed to ${recipient}`);
