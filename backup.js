@@ -96,6 +96,25 @@ async function runAllTrashCleanup() {
   return { ok: true, count };
 }
 
+async function resetAllBackups() {
+  // Deletes every existing backup file (not just trashed ones), needed to
+  // fully reclaim the Service Account's exhausted storage quota. Use this
+  // once, then let ownership-transfer handle future backups properly.
+  const drive = await getDriveClient();
+  const folderId = await getOrCreateBackupFolder(drive);
+  const res = await drive.files.list({
+    q: `'${folderId}' in parents and trashed=false`,
+    fields: 'files(id, name)',
+    spaces: 'drive'
+  });
+  const files = res.data.files || [];
+  for (const file of files) {
+    await drive.files.delete({ fileId: file.id });
+  }
+  await core.logActivity('System', 'Reset All Backups', `${files.length} file(s) permanently deleted`);
+  return { ok: true, count: files.length };
+}
+
 async function runDailyBackup() {
   try {
     const drive = await getDriveClient();
@@ -120,4 +139,4 @@ async function runDailyBackup() {
   }
 }
 
-module.exports = { runDailyBackup, runAllTrashCleanup };
+module.exports = { runDailyBackup, runAllTrashCleanup, resetAllBackups };
