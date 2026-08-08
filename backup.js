@@ -25,10 +25,10 @@ async function getDriveClient() {
 }
 
 function getMailTransporter() {
-  const host = process.env.SMTP_HOST;
-  const port = Number(process.env.SMTP_PORT || 587);
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
+  const host = (process.env.SMTP_HOST || '').trim();
+  const port = Number((process.env.SMTP_PORT || '587').trim());
+  const user = (process.env.SMTP_USER || '').trim();
+  const pass = (process.env.SMTP_PASS || '').trim();
   if (!host || !user || !pass) {
     throw new Error('Email backup is not configured - SMTP_HOST, SMTP_USER, and SMTP_PASS must be set in Render.');
   }
@@ -40,7 +40,7 @@ function getMailTransporter() {
 
 async function runDailyBackup() {
   try {
-    const recipient = process.env.BACKUP_EMAIL_TO;
+    const recipient = (process.env.BACKUP_EMAIL_TO || '').trim();
     if (!recipient) {
       throw new Error('BACKUP_EMAIL_TO is not set in Render - no address to send the backup to.');
     }
@@ -63,7 +63,7 @@ async function runDailyBackup() {
 
     const transporter = getMailTransporter();
     await transporter.sendMail({
-      from: process.env.SMTP_USER,
+      from: (process.env.SMTP_USER || '').trim(),
       to: recipient,
       subject: `Daily Backup - ${sheetName} - ${dateStr}`,
       text: `Attached is the daily backup of "${sheetName}", generated ${dateStr} (India time).`,
