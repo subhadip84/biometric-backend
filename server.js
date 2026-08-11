@@ -15,6 +15,13 @@ cron.schedule('0 2 * * *', () => {
   runDailyBackup();
 }, { timezone: 'Asia/Kolkata' });
 
+// Runs every 5 minutes, checking for sessions that stopped sending
+// heartbeats (browser crash, force-quit, power loss, etc.) and logs their
+// end properly, rather than leaving it silently unrecorded.
+cron.schedule('*/5 * * * *', () => {
+  core.checkStaleSessions().catch(err => console.error('Stale session check failed:', err.message));
+});
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -59,6 +66,8 @@ const API_FUNCTIONS = {
   getHelpQuestionStats: core.getHelpQuestionStats,
   logSessionIp: core.logSessionIp,
   logSessionEnd: core.logSessionEnd,
+  recordHeartbeat: core.recordHeartbeat,
+  clearActiveSession: core.clearActiveSession,
   exportRosterAsCsv: core.exportRosterAsCsv,
   getLastImportInfo: core.getLastImportInfo,
   getTodayImportCount: core.getTodayImportCount,
