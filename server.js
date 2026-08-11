@@ -63,6 +63,7 @@ const API_FUNCTIONS = {
   updateAnnouncement: core.updateAnnouncement,
   deleteAnnouncement: core.deleteAnnouncement,
   logHelpQuestion: core.logHelpQuestion,
+  askAiHelpAssistant: core.askAiHelpAssistant,
   getHelpQuestionStats: core.getHelpQuestionStats,
   logSessionIp: core.logSessionIp,
   logSessionEnd: core.logSessionEnd,
