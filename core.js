@@ -961,9 +961,66 @@ async function logSessionIp(actor, ipAddress, failureReason) {
   return { ok: true };
 }
 
-async function logSessionEnd(actor, durationText) {
+async function logSessionEnd(actor, durationText, userId) {
   await logActivity(actor || 'unknown', 'Session Ended', 'Duration: ' + (durationText || 'unknown'));
+  if (userId) await clearActiveSession(userId);
   return { ok: true };
+}
+
+// ---------- Heartbeat-based unexpected-close detection ----------
+// Client pings this periodically while logged in. If pings stop arriving
+// (e.g. a browser crash, force-quit, or power loss - none of which give
+// any JavaScript a chance to run and report a clean close), a periodic
+// server-side check notices the gap and logs a proper "Session Ended"
+// entry anyway, rather than leaving that session's end silently unrecorded.
+
+const ACTIVE_SESSIONS_KEY = 'activeSessions';
+const HEARTBEAT_STALE_MINUTES = 10; // no heartbeat for this long = presumed unexpectedly closed
+
+async function recordHeartbeat(userId, actorName) {
+  if (!userId) return { ok: false, error: 'Missing userId.' };
+  const sessions = await getSetting(ACTIVE_SESSIONS_KEY, {});
+  const existing = sessions[userId];
+  sessions[userId] = {
+    actorName: actorName || (existing && existing.actorName) || 'unknown',
+    loginTime: (existing && existing.loginTime) || Date.now(),
+    lastHeartbeat: Date.now()
+  };
+  await setSetting(ACTIVE_SESSIONS_KEY, sessions);
+  return { ok: true };
+}
+
+async function clearActiveSession(userId) {
+  if (!userId) return { ok: true };
+  const sessions = await getSetting(ACTIVE_SESSIONS_KEY, {});
+  if (sessions[userId]) {
+    delete sessions[userId];
+    await setSetting(ACTIVE_SESSIONS_KEY, sessions);
+  }
+  return { ok: true };
+}
+
+async function checkStaleSessions() {
+  const sessions = await getSetting(ACTIVE_SESSIONS_KEY, {});
+  const cutoff = Date.now() - HEARTBEAT_STALE_MINUTES * 60 * 1000;
+  let changed = false;
+
+  for (const userId of Object.keys(sessions)) {
+    const session = sessions[userId];
+    if (session.lastHeartbeat < cutoff) {
+      const durationMs = session.lastHeartbeat - session.loginTime;
+      const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const durationText = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+      await logActivity(session.actorName, 'Session Ended', `Duration: ${durationText} (connection lost unexpectedly)`);
+      delete sessions[userId];
+      changed = true;
+    }
+  }
+
+  if (changed) await setSetting(ACTIVE_SESSIONS_KEY, sessions);
+  return { ok: true, checked: Object.keys(sessions).length };
 }
 
 // ---------- CSV export ----------
@@ -1432,7 +1489,7 @@ module.exports = {
   validateImportRows, importNewStudents, importVerificationUpdates,
   getAnnouncements, publishAnnouncement, updateAnnouncement, deleteAnnouncement,
   logHelpQuestion, getHelpQuestionStats,
-  logSessionIp, logSessionEnd,
+  logSessionIp, logSessionEnd, recordHeartbeat, clearActiveSession, checkStaleSessions,
   exportRosterAsCsv,
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
   getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv,
