@@ -1476,6 +1476,54 @@ async function importHostelVerificationUpdates(uploadedHeaders, uploadedRows, ad
   return { ok: true, updated, alreadyDone, notFoundRows };
 }
 
+// ---------- AI-powered Help Assistant ----------
+
+const HELP_ASSISTANT_SYSTEM_PROMPT = `You are the in-app Help Assistant for "Biometric Verification Desk", an internal tool for Adamas University IT staff (AKC IT Support) tracking student biometric verification and hostel face-capture verification.
+
+Key things staff and admins can do:
+- Search for a student by App No, Reg No, Machine Code, or name; mark them Verified or Pending
+- Once verified, a record locks - only an Admin can unlock it (enter admin password) before changing it again
+- Admins can: bulk import new students, bulk import verification updates from a file, download CSV reports (filtered by Verified/Pending/All), manage user accounts and permissions, view the Activity Log, download a PDF of the activity log for a date range
+- There's a separate "Hostel Lookup" page for Face Capture verification of hostel students, working the same way but with its own roster
+- "Demo" accounts have full admin-like access but cannot verify/delete anything (hard-restricted)
+- Staff accounts can be individually granted just "Hostel Data Access" without becoming admin
+
+Answer questions clearly and concisely, in plain language, focused on how to actually do the thing they're asking about. If a question is about something outside this app's scope, say so briefly and suggest contacting AKC IT Support. Keep answers short - a few sentences at most, this is a small in-app chat widget, not a long document.`;
+
+async function askAiHelpAssistant(question) {
+  const apiKey = (process.env.GROQ_API_KEY || '').trim();
+  if (!apiKey) {
+    return { ok: false, error: 'AI Help Assistant is not configured yet.' };
+  }
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        max_tokens: 300,
+        messages: [
+          { role: 'system', content: HELP_ASSISTANT_SYSTEM_PROMPT },
+          { role: 'user', content: String(question || '').slice(0, 500) }
+        ]
+      })
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Groq API error (${response.status}): ${errText}`);
+    }
+    const data = await response.json();
+    const answer = (data.choices && data.choices[0] && data.choices[0].message &&
+      data.choices[0].message.content) || "I couldn't come up with an answer for that.";
+    return { ok: true, answer };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 module.exports = {
   normalize, detectColumns, colToLetter, ensureExtraColumns,
   getAllUsers, writeAllUsers, effectivePermissions, capitalizeFirst, ALL_PERMISSION_KEYS,
@@ -1493,5 +1541,6 @@ module.exports = {
   exportRosterAsCsv,
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
   getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv,
-  importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo
+  importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo,
+  askAiHelpAssistant
 };
