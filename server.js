@@ -67,6 +67,7 @@ const API_FUNCTIONS = {
   logHelpChatEvent: core.logHelpChatEvent,
   getUnusualActivityFlags: core.getUnusualActivityFlags,
   parseVoiceCommand: core.parseVoiceCommand,
+  getOnlineUsers: core.getOnlineUsers,
   getHelpQuestionStats: core.getHelpQuestionStats,
   logSessionIp: core.logSessionIp,
   logSessionEnd: core.logSessionEnd,
