@@ -1596,14 +1596,17 @@ const VOICE_COMMAND_SYSTEM_PROMPT = `You parse a spoken voice command into a str
 Recognized actions:
 - "mark_verified": mark a student as verified/done. Needs an "identifier" (App No, Reg No, Machine Code, or student name, exactly as spoken).
 - "mark_pending": mark a student back as pending/not done. Needs an "identifier".
-- "unknown": the command doesn't match a recognized action, or is missing required information.
+- "search": the person just said a name, App No, Reg No, or Machine Code with no explicit instruction attached - they want to find/look up that student, not necessarily change their status. This is the right choice whenever no clear verb like "mark", "set", or "change" is present - default to this over "unknown" whenever an identifier-like value is present.
+- "unknown": the command doesn't match a recognized action, or contains no identifiable name/number at all.
 
 Respond with exactly this shape:
-{"action": "mark_verified" | "mark_pending" | "unknown", "identifier": "<string or null>"}
+{"action": "mark_verified" | "mark_pending" | "search" | "unknown", "identifier": "<string or null>"}
 
 Examples:
 "mark APP-2026-1234 as verified" -> {"action":"mark_verified","identifier":"APP-2026-1234"}
 "set Soubhagya Chatterjee to pending" -> {"action":"mark_pending","identifier":"Soubhagya Chatterjee"}
+"Soubhagya Chatterjee" -> {"action":"search","identifier":"Soubhagya Chatterjee"}
+"find APP-2026-1234" -> {"action":"search","identifier":"APP-2026-1234"}
 "what's the weather" -> {"action":"unknown","identifier":null}`;
 
 async function parseVoiceCommand(spokenText) {
@@ -1628,7 +1631,7 @@ async function parseVoiceCommand(spokenText) {
     const raw = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '{}';
     const cleaned = raw.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(cleaned);
-    if (!['mark_verified', 'mark_pending', 'unknown'].includes(parsed.action)) {
+    if (!['mark_verified', 'mark_pending', 'search', 'unknown'].includes(parsed.action)) {
       return { ok: true, action: 'unknown', identifier: null };
     }
     return { ok: true, action: parsed.action, identifier: parsed.identifier || null };
