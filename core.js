@@ -1092,6 +1092,16 @@ async function clearActiveSession(userId) {
   return { ok: true };
 }
 
+async function getOnlineUsers() {
+  const sessions = await getSetting(ACTIVE_SESSIONS_KEY, {});
+  const cutoff = Date.now() - HEARTBEAT_STALE_MINUTES * 60 * 1000;
+  const online = Object.values(sessions)
+    .filter(s => s.lastHeartbeat >= cutoff)
+    .map(s => ({ actorName: s.actorName, loginTime: s.loginTime }))
+    .sort((a, b) => b.loginTime - a.loginTime);
+  return { ok: true, users: online };
+}
+
 async function checkStaleSessions() {
   const sessions = await getSetting(ACTIVE_SESSIONS_KEY, {});
   const cutoff = Date.now() - HEARTBEAT_STALE_MINUTES * 60 * 1000;
@@ -1692,5 +1702,5 @@ module.exports = {
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
   getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo,
-  askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand
+  askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers
 };
