@@ -251,6 +251,98 @@ async function getActivityLog(limit) {
   };
 }
 
+// ---------- Unusual activity detection ----------
+// Deliberately rule-based rather than AI-judged: statistical thresholds are
+// more reliable and predictable for this than an LLM's subjective read of
+// "unusual", and false positives here would just be noise for an admin to
+// scan past - simple, explainable rules keep that noise low.
+
+const BURST_THRESHOLD_COUNT = 15;      // this many verifications...
+const BURST_THRESHOLD_MINUTES = 10;    // ...within this many minutes = a burst worth a glance
+const UNUSUAL_HOUR_START = 0;          // midnight
+const UNUSUAL_HOUR_END = 5;            // 5 AM - outside typical working hours
+
+async function getUnusualActivityFlags() {
+  await sheetsApi.ensureSheet(sheetsApi.ACTIVITY_LOG_SHEET_NAME, ['Timestamp', 'Actor', 'Action', 'Details']);
+  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:D`);
+  // Only look at the last 7 days' worth of entries, not the entire history
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const recent = rows.filter(r => {
+    const t = parseTimestampLoose(r[0]);
+    return t && t.getTime() >= cutoff;
+  });
+
+  const flags = [];
+
+  // --- Burst detection: same actor, many verification-type actions, tight time window ---
+  const verifyActions = ['Verified', 'Hostel Face Capture Verified'];
+  const byActor = {};
+  recent.forEach(r => {
+    const action = String(r[2] || '');
+    if (!verifyActions.some(a => action.indexOf(a) !== -1)) return;
+    const actor = String(r[1] || 'unknown');
+    const t = parseTimestampLoose(r[0]);
+    if (!t) return;
+    if (!byActor[actor]) byActor[actor] = [];
+    byActor[actor].push(t.getTime());
+  });
+  for (const actor of Object.keys(byActor)) {
+    const times = byActor[actor].sort((a, b) => a - b);
+    for (let i = 0; i + BURST_THRESHOLD_COUNT - 1 < times.length; i++) {
+      const windowStart = times[i];
+      const windowEnd = times[i + BURST_THRESHOLD_COUNT - 1];
+      if ((windowEnd - windowStart) <= BURST_THRESHOLD_MINUTES * 60 * 1000) {
+        flags.push({
+          type: 'burst',
+          actor,
+          detail: `${BURST_THRESHOLD_COUNT} verifications within ${Math.round((windowEnd - windowStart) / 60000)} minute(s)`,
+          timestamp: new Date(windowEnd).toISOString()
+        });
+        break; // one flag per actor is enough, don't spam duplicates from overlapping windows
+      }
+    }
+  }
+
+  // --- Unusual-hour detection: activity between midnight and 5 AM India time ---
+  // Timestamps are already stored as IST directly, so the parsed hour
+  // component below is already the correct India-time hour - no further
+  // timezone conversion needed (or wanted).
+  const unusualHourActors = {};
+  recent.forEach(r => {
+    const raw = String(r[0] || '').replace(/^'/, '').trim();
+    const match = raw.match(/^\d{4}-\d{1,2}-\d{1,2}[ T](\d{1,2}):/);
+    if (!match) return;
+    const istHour = Number(match[1]);
+    if (istHour >= UNUSUAL_HOUR_START && istHour < UNUSUAL_HOUR_END) {
+      const actor = String(r[1] || 'unknown');
+      if (actor === 'System' || actor === 'unknown') return; // scheduled jobs run overnight - not worth flagging
+      if (!unusualHourActors[actor]) unusualHourActors[actor] = 0;
+      unusualHourActors[actor]++;
+    }
+  });
+  for (const actor of Object.keys(unusualHourActors)) {
+    flags.push({
+      type: 'unusual_hour',
+      actor,
+      detail: `${unusualHourActors[actor]} action(s) between midnight and 5 AM`,
+      timestamp: null
+    });
+  }
+
+  return { ok: true, flags };
+}
+
+// Parses a timestamp that may or may not have the apostrophe prefix used to
+// force text storage, tolerating both padded and unpadded values.
+function parseTimestampLoose(raw) {
+  const str = String(raw || '').replace(/^'/, '').trim();
+  const match = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{1,2}):(\d{1,2})/);
+  if (!match) return null;
+  const [, y, mo, d, h, mi, s] = match.map(Number);
+  const date = new Date(y, mo - 1, d, h, mi, s);
+  return isNaN(date.getTime()) ? null : date;
+}
+
 // ---------- Core roster functions ----------
 
 async function checkLogin(userId, password, deviceInfo) {
@@ -1499,6 +1591,52 @@ async function logHelpChatEvent(actor, eventType) {
   return { ok: true };
 }
 
+const VOICE_COMMAND_SYSTEM_PROMPT = `You parse a spoken voice command into a structured action for a student verification app. Respond with ONLY a JSON object, no other text, no markdown fences.
+
+Recognized actions:
+- "mark_verified": mark a student as verified/done. Needs an "identifier" (App No, Reg No, Machine Code, or student name, exactly as spoken).
+- "mark_pending": mark a student back as pending/not done. Needs an "identifier".
+- "unknown": the command doesn't match a recognized action, or is missing required information.
+
+Respond with exactly this shape:
+{"action": "mark_verified" | "mark_pending" | "unknown", "identifier": "<string or null>"}
+
+Examples:
+"mark APP-2026-1234 as verified" -> {"action":"mark_verified","identifier":"APP-2026-1234"}
+"set Soubhagya Chatterjee to pending" -> {"action":"mark_pending","identifier":"Soubhagya Chatterjee"}
+"what's the weather" -> {"action":"unknown","identifier":null}`;
+
+async function parseVoiceCommand(spokenText) {
+  const apiKey = (process.env.GROQ_API_KEY || '').trim();
+  if (!apiKey) return { ok: false, error: 'Voice commands are not configured yet.' };
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        max_tokens: 150,
+        temperature: 0,
+        messages: [
+          { role: 'system', content: VOICE_COMMAND_SYSTEM_PROMPT },
+          { role: 'user', content: String(spokenText || '').slice(0, 300) }
+        ]
+      })
+    });
+    if (!response.ok) throw new Error(`Groq API error (${response.status})`);
+    const data = await response.json();
+    const raw = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '{}';
+    const cleaned = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    if (!['mark_verified', 'mark_pending', 'unknown'].includes(parsed.action)) {
+      return { ok: true, action: 'unknown', identifier: null };
+    }
+    return { ok: true, action: parsed.action, identifier: parsed.identifier || null };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 async function askAiHelpAssistant(question) {
   const apiKey = (process.env.GROQ_API_KEY || '').trim();
   if (!apiKey) {
@@ -1551,5 +1689,5 @@ module.exports = {
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
   getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo,
-  askAiHelpAssistant, logHelpChatEvent
+  askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand
 };
