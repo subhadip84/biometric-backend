@@ -1080,6 +1080,7 @@ async function getLastImportInfo() {
     if (data[i][2] === 'Imported New Students') {
       const match = String(data[i][3] || '').match(/^(\d+)\s+added/);
       const count = match ? parseInt(match[1], 10) : 0;
+      if (count === 0) continue; // an import that added nothing shouldn't overwrite the last genuine "fresh data" moment
       return { ok: true, count, timestamp: data[i][0] || null };
     }
   }
@@ -1129,6 +1130,7 @@ async function getLastHostelImportInfo() {
     if (data[i][2] === 'Imported New Hostel Data') {
       const match = String(data[i][3] || '').match(/^(\d+)\s+added/);
       const count = match ? parseInt(match[1], 10) : 0;
+      if (count === 0) continue; // an import that added nothing shouldn't overwrite the last genuine "fresh data" moment
       return { ok: true, count, timestamp: data[i][0] || null };
     }
   }
@@ -1490,6 +1492,13 @@ Key things staff and admins can do:
 
 Answer questions clearly and concisely, in plain language, focused on how to actually do the thing they're asking about. If a question is about something outside this app's scope, say so briefly and suggest contacting AKC IT Support. Keep answers short - a few sentences at most, this is a small in-app chat widget, not a long document.`;
 
+const ALLOWED_HELP_CHAT_EVENTS = ['Started New Chat', 'Ended Chat'];
+async function logHelpChatEvent(actor, eventType) {
+  if (!ALLOWED_HELP_CHAT_EVENTS.includes(eventType)) return { ok: false, error: 'Invalid event type.' };
+  await logActivity(actor || 'unknown', `Help Chat: ${eventType}`, '');
+  return { ok: true };
+}
+
 async function askAiHelpAssistant(question) {
   const apiKey = (process.env.GROQ_API_KEY || '').trim();
   if (!apiKey) {
@@ -1542,5 +1551,5 @@ module.exports = {
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
   getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo,
-  askAiHelpAssistant
+  askAiHelpAssistant, logHelpChatEvent
 };
