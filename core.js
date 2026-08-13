@@ -1092,6 +1092,52 @@ async function clearActiveSession(userId) {
   return { ok: true };
 }
 
+// ---------- Public QR lookup (no login required) ----------
+// Deliberately returns only what's needed for a quick public check - name,
+// status, and site/hostel context - never the full roster, never who
+// verified them, never any other student's data. A QR code only encodes
+// one specific identifier, so this only ever matches and returns one record.
+
+async function publicLookupStudent(identifier) {
+  if (!identifier) return { ok: false, error: 'No identifier provided.' };
+  const data = await getStudents();
+  if (!data.ok) return { ok: false, error: 'Could not look this up right now.' };
+  const q = String(identifier).trim().toLowerCase();
+  const match = data.students.find(s =>
+    (s.appNo && s.appNo.toLowerCase() === q) ||
+    (s.regNo && s.regNo.toLowerCase() === q) ||
+    (s.machineCode && s.machineCode.toLowerCase() === q)
+  );
+  if (!match) return { ok: false, error: 'No matching record found.' };
+  return {
+    ok: true,
+    name: match.name,
+    appNo: match.appNo,
+    siteCode: match.siteCode,
+    status: match.status
+  };
+}
+
+async function publicLookupHostelStudent(identifier) {
+  if (!identifier) return { ok: false, error: 'No identifier provided.' };
+  const data = await getHostelData();
+  if (!data.ok) return { ok: false, error: 'Could not look this up right now.' };
+  const q = String(identifier).trim().toLowerCase();
+  const match = data.students.find(s =>
+    (s.applicationNo && s.applicationNo.toLowerCase() === q) ||
+    (s.registrationNo && s.registrationNo.toLowerCase() === q) ||
+    (s.machineCode && s.machineCode.toLowerCase() === q)
+  );
+  if (!match) return { ok: false, error: 'No matching record found.' };
+  return {
+    ok: true,
+    name: match.studentName,
+    appNo: match.applicationNo,
+    hostelName: match.hostelName,
+    status: match.status
+  };
+}
+
 async function getOnlineUsers() {
   const sessions = await getSetting(ACTIVE_SESSIONS_KEY, {});
   const cutoff = Date.now() - HEARTBEAT_STALE_MINUTES * 60 * 1000;
@@ -1830,5 +1876,6 @@ module.exports = {
   getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo,
   askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
-  getStaffLeaderboard, getLoginDigest, getUndoSetting, setUndoSetting, undoRecentVerification, undoRecentHostelVerification
+  getStaffLeaderboard, getLoginDigest, getUndoSetting, setUndoSetting, undoRecentVerification, undoRecentHostelVerification,
+  publicLookupStudent, publicLookupHostelStudent
 };
