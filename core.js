@@ -194,12 +194,12 @@ function effectivePermissions(userRecord) {
     // delegated to a staff account without promoting them to admin/demo.
     return { hostelAccess: !!(userRecord.permissions && userRecord.permissions.hostelAccess) };
   }
-  if (!userRecord.permissions) {
-    const all = {};
-    ALL_PERMISSION_KEYS.forEach(k => { all[k] = true; });
-    return all;
-  }
-  return userRecord.permissions;
+  // Admin always gets every permission, regardless of what's stored -
+  // a stored permissions object missing a newer key (like hostelAccess)
+  // should never accidentally strip access from an admin account.
+  const all = {};
+  ALL_PERMISSION_KEYS.forEach(k => { all[k] = true; });
+  return all;
 }
 
 function capitalizeFirst(s) {
@@ -1102,6 +1102,133 @@ async function getOnlineUsers() {
   return { ok: true, users: online };
 }
 
+async function getStaffLeaderboard() {
+  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:D`);
+  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const verifyActions = ['Verified', 'Hostel Face Capture Verified'];
+  const counts = {};
+  rows.forEach(r => {
+    const action = String(r[2] || '');
+    if (!verifyActions.some(a => action.indexOf(a) !== -1)) return;
+    const t = parseTimestampLoose(r[0]);
+    if (!t || t.getTime() < cutoff) return;
+    const actor = String(r[1] || 'unknown');
+    counts[actor] = (counts[actor] || 0) + 1;
+  });
+  const leaderboard = Object.keys(counts)
+    .map(actor => ({ actor, count: counts[actor] }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+  return { ok: true, leaderboard };
+}
+
+// ---------- "What changed since you were last here" login digest ----------
+async function getLoginDigest(actorName) {
+  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:D`);
+  // Find this actor's second-most-recent "Login Successful" - the most recent
+  // one is the login that just happened, so the one before that is the
+  // actual "since you were last here" reference point.
+  const logins = rows.filter(r => r[2] === 'Login Successful' && r[1] === actorName);
+  if (logins.length < 2) return { ok: true, hasPrevious: false };
+  const previousLoginTime = parseTimestampLoose(logins[logins.length - 2][0]);
+  if (!previousLoginTime) return { ok: true, hasPrevious: false };
+
+  const cutoffMs = previousLoginTime.getTime();
+  let verifiedCount = 0, newStaffCount = 0, unusualFlagCount = 0;
+  const verifyActions = ['Verified', 'Hostel Face Capture Verified'];
+  rows.forEach(r => {
+    const t = parseTimestampLoose(r[0]);
+    if (!t || t.getTime() <= cutoffMs) return;
+    const action = String(r[2] || '');
+    if (verifyActions.some(a => action.indexOf(a) !== -1)) verifiedCount++;
+    if (action === 'Created User') newStaffCount++;
+  });
+  const flags = await getUnusualActivityFlags();
+  unusualFlagCount = (flags.ok && flags.flags) ? flags.flags.length : 0;
+
+  return {
+    ok: true, hasPrevious: true,
+    previousLoginTime: logins[logins.length - 2][0],
+    verifiedCount, newStaffCount, unusualFlagCount
+  };
+}
+
+// ---------- Undo verification (admin-toggleable) ----------
+const UNDO_ENABLED_KEY = 'undoWindowEnabled';
+const UNDO_WINDOW_SECONDS = 15;
+
+async function getUndoSetting() {
+  const enabled = await getSetting(UNDO_ENABLED_KEY, false);
+  return { ok: true, enabled };
+}
+
+async function setUndoSetting(enabled, userId) {
+  const users = await getAllUsers();
+  const caller = users[String(userId || '')];
+  if (!caller || caller.role !== 'admin') {
+    return { ok: false, error: 'Only admin accounts can change this setting.' };
+  }
+  await setSetting(UNDO_ENABLED_KEY, !!enabled);
+  return { ok: true };
+}
+
+async function undoRecentVerification(rowId, actor, actorUserId) {
+  const undoSetting = await getSetting(UNDO_ENABLED_KEY, false);
+  if (!undoSetting) return { ok: false, error: 'The undo window is not enabled by your admin.' };
+
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  const headers = data[0];
+  const col = detectColumns(headers);
+  const rowNum = parseInt(String(rowId).replace('row', ''), 10);
+  if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid student id.' };
+  const row = data[rowNum - 1] || [];
+
+  const verifiedAtRaw = String(row[col.verifiedAt] || '').replace(/^'/, '').trim();
+  const verifiedAt = parseTimestampLoose(verifiedAtRaw);
+  if (!verifiedAt) return { ok: false, error: 'No recent verification found to undo.' };
+  const secondsSince = (Date.now() - verifiedAt.getTime()) / 1000;
+  if (secondsSince > UNDO_WINDOW_SECONDS + 5) { // small buffer for clock/network variance
+    return { ok: false, error: 'The undo window has expired.' };
+  }
+
+  await sheetsApi.batchWriteRanges([
+    { range: `${sheetName}!${colToLetter(col.status)}${rowNum}`, values: [['Not Done']] },
+    { range: `${sheetName}!${colToLetter(col.lock)}${rowNum}`, values: [['']] }
+  ]);
+  const studentName = col.name > -1 ? String(row[col.name] || '') : '';
+  await logActivity(actor || 'unknown', 'Undid Verification', `${studentName} (row ${rowNum})`);
+  return { ok: true };
+}
+
+async function undoRecentHostelVerification(rowId, actor) {
+  const undoSetting = await getSetting(UNDO_ENABLED_KEY, false);
+  if (!undoSetting) return { ok: false, error: 'The undo window is not enabled by your admin.' };
+
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  const col = detectHostelColumns(headers);
+  const rowNum = parseInt(String(rowId).replace('hrow', ''), 10);
+  if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid record id.' };
+  const row = data[rowNum - 1] || [];
+
+  const verifiedAtRaw = String(row[col.verifiedAt] || '').replace(/^'/, '').trim();
+  const verifiedAt = parseTimestampLoose(verifiedAtRaw);
+  if (!verifiedAt) return { ok: false, error: 'No recent verification found to undo.' };
+  const secondsSince = (Date.now() - verifiedAt.getTime()) / 1000;
+  if (secondsSince > UNDO_WINDOW_SECONDS + 5) {
+    return { ok: false, error: 'The undo window has expired.' };
+  }
+
+  await sheetsApi.batchWriteRanges([
+    { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.status)}${rowNum}`, values: [['Not Done']] },
+    { range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.lock)}${rowNum}`, values: [['']] }
+  ]);
+  const studentName = col['studentname'] > -1 ? String(row[col['studentname']] || '') : '';
+  await logActivity(actor || 'unknown', 'Undid Hostel Verification', `${studentName} (row ${rowNum})`);
+  return { ok: true };
+}
+
 async function checkStaleSessions() {
   const sessions = await getSetting(ACTIVE_SESSIONS_KEY, {});
   const cutoff = Date.now() - HEARTBEAT_STALE_MINUTES * 60 * 1000;
@@ -1702,5 +1829,6 @@ module.exports = {
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
   getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo,
-  askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers
+  askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
+  getStaffLeaderboard, getLoginDigest, getUndoSetting, setUndoSetting, undoRecentVerification, undoRecentHostelVerification
 };
