@@ -1117,6 +1117,7 @@ async function publicLookupStudent(identifier) {
     ok: true,
     name: match.name,
     appNo: match.appNo,
+    regNo: match.regNo,
     siteCode: match.siteCode,
     status: match.status
   };
@@ -1137,6 +1138,7 @@ async function publicLookupHostelStudent(identifier) {
     ok: true,
     name: match.studentName,
     appNo: match.applicationNo,
+    regNo: match.registrationNo,
     hostelName: match.hostelName,
     status: match.status
   };
