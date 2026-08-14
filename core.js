@@ -178,7 +178,7 @@ async function writeAllUsers(usersObj) {
 const ALL_PERMISSION_KEYS = [
   'viewSummary', 'downloadCsv', 'unlockRecords', 'lockAll', 'viewActivityLog',
   'composeMessage', 'importStudents', 'importVerification', 'resetPasswords',
-  'manageUsers', 'deleteStudent', 'hostelAccess'
+  'manageUsers', 'deleteStudent', 'hostelAccess', 'allowUndo'
 ];
 
 function effectivePermissions(userRecord) {
@@ -190,9 +190,13 @@ function effectivePermissions(userRecord) {
     return all;
   }
   if (userRecord.role !== 'admin') {
-    // Staff normally has no permissions, but hostelAccess can be individually
-    // delegated to a staff account without promoting them to admin/demo.
-    return { hostelAccess: !!(userRecord.permissions && userRecord.permissions.hostelAccess) };
+    // Staff normally has no permissions, but hostelAccess and allowUndo can
+    // each be individually delegated to a staff account without promoting
+    // them to admin/demo.
+    return {
+      hostelAccess: !!(userRecord.permissions && userRecord.permissions.hostelAccess),
+      allowUndo: !!(userRecord.permissions && userRecord.permissions.allowUndo)
+    };
   }
   // Admin always gets every permission, regardless of what's stored -
   // a stored permissions object missing a newer key (like hostelAccess)
@@ -657,7 +661,7 @@ async function createUser(newUserId, newPassword, role, adminPassword, displayNa
     if (role === 'demo') cleanPerms.deleteStudent = false; // hard restriction, also enforced in deleteStudent()
     userRecord.permissions = cleanPerms;
   } else if (role === 'staff' && permissions && typeof permissions === 'object') {
-    userRecord.permissions = { hostelAccess: !!permissions.hostelAccess };
+    userRecord.permissions = { hostelAccess: !!permissions.hostelAccess, allowUndo: !!permissions.allowUndo };
   }
 
   users[key] = userRecord;
@@ -713,7 +717,7 @@ async function updateUserDetails(targetUserId, newName, newRole, permissions, ad
     if (role === 'demo') cleanPerms.deleteStudent = false; // hard restriction, also enforced in deleteStudent()
     users[key].permissions = cleanPerms;
   } else if (role === 'staff') {
-    users[key].permissions = { hostelAccess: !!(permissions && permissions.hostelAccess) };
+    users[key].permissions = { hostelAccess: !!(permissions && permissions.hostelAccess), allowUndo: !!(permissions && permissions.allowUndo) };
   } else {
     delete users[key].permissions;
   }
@@ -1199,28 +1203,14 @@ async function getLoginDigest(actorName) {
   };
 }
 
-// ---------- Undo verification (admin-toggleable) ----------
-const UNDO_ENABLED_KEY = 'undoWindowEnabled';
+// ---------- Undo verification (per-user permission, set via Manage Users) ----------
 const UNDO_WINDOW_SECONDS = 15;
 
-async function getUndoSetting() {
-  const enabled = await getSetting(UNDO_ENABLED_KEY, false);
-  return { ok: true, enabled };
-}
-
-async function setUndoSetting(enabled, userId) {
-  const users = await getAllUsers();
-  const caller = users[String(userId || '')];
-  if (!caller || caller.role !== 'admin') {
-    return { ok: false, error: 'Only admin accounts can change this setting.' };
-  }
-  await setSetting(UNDO_ENABLED_KEY, !!enabled);
-  return { ok: true };
-}
-
 async function undoRecentVerification(rowId, actor, actorUserId) {
-  const undoSetting = await getSetting(UNDO_ENABLED_KEY, false);
-  if (!undoSetting) return { ok: false, error: 'The undo window is not enabled by your admin.' };
+  const users = await getAllUsers();
+  const caller = users[String(actorUserId || '')];
+  const callerPerms = caller ? effectivePermissions(caller) : {};
+  if (!callerPerms.allowUndo) return { ok: false, error: 'Your account is not allowed to undo verifications. Ask your admin to enable this under Manage Users.' };
 
   const sheetName = await sheetsApi.getMasterSheetName();
   const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
@@ -1247,9 +1237,11 @@ async function undoRecentVerification(rowId, actor, actorUserId) {
   return { ok: true };
 }
 
-async function undoRecentHostelVerification(rowId, actor) {
-  const undoSetting = await getSetting(UNDO_ENABLED_KEY, false);
-  if (!undoSetting) return { ok: false, error: 'The undo window is not enabled by your admin.' };
+async function undoRecentHostelVerification(rowId, actor, actorUserId) {
+  const users = await getAllUsers();
+  const caller = users[String(actorUserId || '')];
+  const callerPerms = caller ? effectivePermissions(caller) : {};
+  if (!callerPerms.allowUndo) return { ok: false, error: 'Your account is not allowed to undo verifications. Ask your admin to enable this under Manage Users.' };
 
   const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
   const headers = data[0];
@@ -1876,6 +1868,6 @@ module.exports = {
   getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo,
   askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
-  getStaffLeaderboard, getLoginDigest, getUndoSetting, setUndoSetting, undoRecentVerification, undoRecentHostelVerification,
+  getStaffLeaderboard, getLoginDigest, undoRecentVerification, undoRecentHostelVerification,
   publicLookupStudent, publicLookupHostelStudent
 };
