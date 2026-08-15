@@ -23,6 +23,7 @@ cron.schedule('*/5 * * * *', () => {
 });
 
 const app = express();
+app.set('trust proxy', true);
 const PORT = process.env.PORT || 3000;
 
 // CORS: allow your GitHub Pages frontend (and localhost for testing) to call this API.
@@ -70,8 +71,6 @@ const API_FUNCTIONS = {
   getOnlineUsers: core.getOnlineUsers,
   getStaffLeaderboard: core.getStaffLeaderboard,
   getLoginDigest: core.getLoginDigest,
-  getUndoSetting: core.getUndoSetting,
-  setUndoSetting: core.setUndoSetting,
   undoRecentVerification: core.undoRecentVerification,
   undoRecentHostelVerification: core.undoRecentHostelVerification,
   publicLookupStudent: core.publicLookupStudent,
@@ -98,17 +97,20 @@ const API_FUNCTIONS = {
 };
 
 app.post('/', async (req, res) => {
-  try {
-    const body = JSON.parse(req.body || '{}');
-    const fn = API_FUNCTIONS[body.fn];
-    if (!fn) {
-      return res.json({ ok: false, error: `Not yet available in the new backend: ${body.fn} (coming in a follow-up update)` });
+  const clientIp = req.ip || 'unknown';
+  core.requestContext.run({ ip: clientIp }, async () => {
+    try {
+      const body = JSON.parse(req.body || '{}');
+      const fn = API_FUNCTIONS[body.fn];
+      if (!fn) {
+        return res.json({ ok: false, error: `Not yet available in the new backend: ${body.fn} (coming in a follow-up update)` });
+      }
+      const result = await fn.apply(null, body.args || []);
+      res.json(result);
+    } catch (err) {
+      res.json({ ok: false, error: 'Server error: ' + err.message });
     }
-    const result = await fn.apply(null, body.args || []);
-    res.json(result);
-  } catch (err) {
-    res.json({ ok: false, error: 'Server error: ' + err.message });
-  }
+  });
 });
 
 app.get('/', (req, res) => {
