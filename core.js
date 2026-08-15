@@ -2,6 +2,15 @@
 // (User management, imports, and announcements come in Phase 2/3.)
 
 const sheetsApi = require('./sheets');
+const { AsyncLocalStorage } = require('async_hooks');
+
+// Request-scoped context (currently just the client IP) so logActivity()
+// can record it without every function in the call chain needing to pass
+// it through explicitly. AsyncLocalStorage correctly scopes this per
+// request even when multiple requests are in flight concurrently - a
+// plain module-level variable would risk one request's IP leaking into
+// another's log entry.
+const requestContext = new AsyncLocalStorage();
 
 const HEADER_CANDIDATES = {
   name: ['studentname', 'name'],
@@ -236,22 +245,41 @@ async function setAdminPassword(newPassword) {
 
 // ---------- Activity Log ----------
 
+// The Activity Log sheet already exists with 4 columns from all prior
+// logging - ensureSheet only creates a sheet if missing entirely, it won't
+// add a column to one that already exists. This lazily adds the IP header
+// once (checked via a flag, not on every call, to avoid extra reads).
+let activityLogIpColumnEnsured = false;
+async function ensureActivityLogIpColumn() {
+  if (activityLogIpColumnEnsured) return;
+  try {
+    const headerCell = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!E1`);
+    if (!headerCell.length || headerCell[0][0] !== 'IP') {
+      await sheetsApi.writeRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!E1`, [['IP']]);
+    }
+  } catch (e) { /* best-effort - don't block logging if this fails */ }
+  activityLogIpColumnEnsured = true;
+}
+
 async function logActivity(actor, action, details) {
   try {
-    await sheetsApi.ensureSheet(sheetsApi.ACTIVITY_LOG_SHEET_NAME, ['Timestamp', 'Actor', 'Action', 'Details']);
+    await sheetsApi.ensureSheet(sheetsApi.ACTIVITY_LOG_SHEET_NAME, ['Timestamp', 'Actor', 'Action', 'Details', 'IP']);
+    await ensureActivityLogIpColumn();
     const timestamp = getISTTimestampForStorage();
-    await sheetsApi.appendRows(sheetsApi.ACTIVITY_LOG_SHEET_NAME, [[timestamp, actor || 'unknown', action, details || '']]);
+    const store = requestContext.getStore();
+    const ip = (store && store.ip) || '';
+    await sheetsApi.appendRows(sheetsApi.ACTIVITY_LOG_SHEET_NAME, [[timestamp, actor || 'unknown', action, details || '', ip]]);
   } catch (e) { /* never let logging break the main action */ }
 }
 
 async function getActivityLog(limit) {
-  await sheetsApi.ensureSheet(sheetsApi.ACTIVITY_LOG_SHEET_NAME, ['Timestamp', 'Actor', 'Action', 'Details']);
-  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:D`);
+  await sheetsApi.ensureSheet(sheetsApi.ACTIVITY_LOG_SHEET_NAME, ['Timestamp', 'Actor', 'Action', 'Details', 'IP']);
+  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:E`);
   const maxRows = Math.min(limit || 200, rows.length);
   const recent = rows.slice(-maxRows).reverse();
   return {
     ok: true,
-    entries: recent.map(r => ({ timestamp: r[0] || '', actor: r[1] || '', action: r[2] || '', details: r[3] || '' }))
+    entries: recent.map(r => ({ timestamp: r[0] || '', actor: r[1] || '', action: r[2] || '', details: r[3] || '', ip: r[4] || '' }))
   };
 }
 
@@ -1871,5 +1899,6 @@ module.exports = {
   importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo,
   askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
   getStaffLeaderboard, getLoginDigest, undoRecentVerification, undoRecentHostelVerification,
-  publicLookupStudent, publicLookupHostelStudent
+  publicLookupStudent, publicLookupHostelStudent,
+  requestContext
 };
