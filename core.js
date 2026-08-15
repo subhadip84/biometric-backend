@@ -296,7 +296,7 @@ const UNUSUAL_HOUR_END = 5;            // 5 AM - outside typical working hours
 
 async function getUnusualActivityFlags() {
   await sheetsApi.ensureSheet(sheetsApi.ACTIVITY_LOG_SHEET_NAME, ['Timestamp', 'Actor', 'Action', 'Details']);
-  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:D`);
+  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:E`);
   // Only look at the last 7 days' worth of entries, not the entire history
   const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
   const recent = rows.filter(r => {
@@ -1183,7 +1183,7 @@ async function getOnlineUsers() {
 }
 
 async function getStaffLeaderboard() {
-  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:D`);
+  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:E`);
   const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
   const verifyActions = ['Verified', 'Hostel Face Capture Verified'];
   const counts = {};
@@ -1204,7 +1204,7 @@ async function getStaffLeaderboard() {
 
 // ---------- "What changed since you were last here" login digest ----------
 async function getLoginDigest(actorName) {
-  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:D`);
+  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:E`);
   // Find this actor's second-most-recent "Login Successful" - the most recent
   // one is the login that just happened, so the one before that is the
   // actual "since you were last here" reference point.
@@ -1372,7 +1372,7 @@ async function exportRosterAsCsv(statusFilter, siteFilter) {
 // ---------- Import stats ----------
 
 async function getLastImportInfo() {
-  const data = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:D`);
+  const data = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:E`);
   for (let i = data.length - 1; i >= 0; i--) {
     if (data[i][2] === 'Imported New Students') {
       const match = String(data[i][3] || '').match(/^(\d+)\s+added/);
@@ -1422,7 +1422,7 @@ function formatUtcTimestampAsIndiaTimeCompact(utcTimestampStr) {
 }
 
 async function getLastHostelImportInfo() {
-  const data = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:D`);
+  const data = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:E`);
   for (let i = data.length - 1; i >= 0; i--) {
     if (data[i][2] === 'Imported New Hostel Data') {
       const match = String(data[i][3] || '').match(/^(\d+)\s+added/);
