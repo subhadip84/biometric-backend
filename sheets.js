@@ -76,16 +76,53 @@ async function ensureSheet(name, headerRow) {
   }
 }
 
+// Short-lived read cache: several dashboard widgets (forecast, unusual
+// activity, leaderboard, online users) each read overlapping ranges - most
+// often the Activity Log - independently on every page load. Without this,
+// a single dashboard refresh alone could fire off half a dozen near-
+// identical reads, quickly hitting Google's per-minute read quota. Any
+// write clears the whole cache, so nothing stale is ever served after a
+// change - this only smooths out redundant reads within a tight window.
+const READ_CACHE_TTL_MS = 15000;
+const readCache = new Map();
+
+function clearReadCache() {
+  readCache.clear();
+}
+
+const inFlightReads = new Map();
+
 async function readRange(rangeA1) {
-  const sheets = await getSheetsClient();
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID,
-    range: rangeA1
-  });
-  return res.data.values || [];
+  const cached = readCache.get(rangeA1);
+  if (cached && (Date.now() - cached.time) < READ_CACHE_TTL_MS) {
+    return cached.data;
+  }
+  // If a read for this exact range is already in progress (several
+  // dashboard widgets fire off near-simultaneously, not sequentially),
+  // reuse that same in-flight request instead of starting a duplicate one.
+  if (inFlightReads.has(rangeA1)) {
+    return inFlightReads.get(rangeA1);
+  }
+  const promise = (async () => {
+    try {
+      const sheets = await getSheetsClient();
+      const res = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID,
+        range: rangeA1
+      });
+      const data = res.data.values || [];
+      readCache.set(rangeA1, { data, time: Date.now() });
+      return data;
+    } finally {
+      inFlightReads.delete(rangeA1);
+    }
+  })();
+  inFlightReads.set(rangeA1, promise);
+  return promise;
 }
 
 async function writeRange(rangeA1, values) {
+  clearReadCache();
   const sheets = await getSheetsClient();
   await sheets.spreadsheets.values.update({
     spreadsheetId: SPREADSHEET_ID,
@@ -101,6 +138,7 @@ async function writeRange(rangeA1, values) {
 // a student verified touches 4-6 cells; bulk operations touch many rows).
 async function batchWriteRanges(updates) {
   if (!updates.length) return;
+  clearReadCache();
   const sheets = await getSheetsClient();
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: SPREADSHEET_ID,
@@ -112,6 +150,7 @@ async function batchWriteRanges(updates) {
 }
 
 async function appendRows(sheetName, values) {
+  clearReadCache();
   const sheets = await getSheetsClient();
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
@@ -123,6 +162,7 @@ async function appendRows(sheetName, values) {
 }
 
 async function clearRange(rangeA1) {
+  clearReadCache();
   const sheets = await getSheetsClient();
   await sheets.spreadsheets.values.clear({
     spreadsheetId: SPREADSHEET_ID,
@@ -138,6 +178,7 @@ async function getSheetIdByName(name) {
 }
 
 async function deleteRow(sheetName, rowNumber1Indexed) {
+  clearReadCache();
   const sheetId = await getSheetIdByName(sheetName);
   const sheets = await getSheetsClient();
   await sheets.spreadsheets.batchUpdate({
@@ -166,6 +207,7 @@ module.exports = {
   appendRows,
   clearRange,
   deleteRow,
+  clearReadCache,
   getAuthClient,
   SPREADSHEET_ID,
   USER_SHEET_NAME,
