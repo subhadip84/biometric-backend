@@ -1882,6 +1882,202 @@ async function askAiHelpAssistant(question) {
   }
 }
 
+// ---------- Natural-language roster search (via Help Assistant) ----------
+const ROSTER_FILTER_SYSTEM_PROMPT = `You parse a natural-language request into structured filter criteria for a student roster search tool. Respond with ONLY a JSON object, no other text, no markdown fences.
+
+Recognized fields (all optional, omit or use null if not mentioned):
+- "siteCode": a site/location code mentioned, exactly as spoken (e.g. "Site B" -> "B").
+- "status": "done" if they want verified/completed students, "pending" if they want not-yet-verified students, null if status isn't mentioned.
+- "nameContains": a name or partial name mentioned to search for.
+- "isFilterRequest": true if this message is asking to find/filter/show students, false if it's an unrelated help question (in which case the other fields should be null).
+
+Respond with exactly this shape:
+{"isFilterRequest": true|false, "siteCode": "<string or null>", "status": "done"|"pending"|null, "nameContains": "<string or null>"}
+
+Examples:
+"everyone from site B still pending" -> {"isFilterRequest":true,"siteCode":"B","status":"pending","nameContains":null}
+"show me who's done at site A" -> {"isFilterRequest":true,"siteCode":"A","status":"done","nameContains":null}
+"find students named sharma" -> {"isFilterRequest":true,"siteCode":null,"status":null,"nameContains":"sharma"}
+"how do I unlock a record" -> {"isFilterRequest":false,"siteCode":null,"status":null,"nameContains":null}`;
+
+async function parseRosterFilterQuery(query) {
+  const apiKey = (process.env.GROQ_API_KEY || '').trim();
+  if (!apiKey) return { ok: false, error: 'This feature is not configured yet.' };
+  try {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        max_tokens: 150,
+        temperature: 0,
+        messages: [
+          { role: 'system', content: ROSTER_FILTER_SYSTEM_PROMPT },
+          { role: 'user', content: String(query || '').slice(0, 300) }
+        ]
+      })
+    });
+    if (!response.ok) throw new Error(`Groq API error (${response.status})`);
+    const data = await response.json();
+    const raw = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '{}';
+    const cleaned = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    return { ok: true, isFilterRequest: !!parsed.isFilterRequest, siteCode: parsed.siteCode || null, status: parsed.status || null, nameContains: parsed.nameContains || null };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+// ---------- AI anomaly explanations ----------
+async function explainUnusualActivity(flags) {
+  const apiKey = (process.env.GROQ_API_KEY || '').trim();
+  if (!apiKey || !flags || !flags.length) return { ok: true, explanation: '' };
+  try {
+    const flagsSummary = flags.map(f => `${f.type}: ${f.detail}`).join('; ');
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        max_tokens: 120,
+        temperature: 0.3,
+        messages: [
+          { role: 'system', content: 'You write one short, plain-English sentence (max 30 words) summarizing unusual activity flags for a non-technical staff member at a student verification desk. Be calm and factual, not alarming - these are patterns worth a glance, not confirmed problems. No preamble, just the sentence.' },
+          { role: 'user', content: flagsSummary.slice(0, 800) }
+        ]
+      })
+    });
+    if (!response.ok) throw new Error(`Groq API error (${response.status})`);
+    const data = await response.json();
+    const explanation = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+    return { ok: true, explanation: explanation.trim() };
+  } catch (err) {
+    return { ok: true, explanation: '' }; // non-critical - fail silently, raw flags still show
+  }
+}
+
+// ---------- AI shift handoff notes ----------
+async function generateShiftHandoffNote(actorName, sinceTimestampMs) {
+  const apiKey = (process.env.GROQ_API_KEY || '').trim();
+  if (!apiKey) return { ok: false, error: 'This feature is not configured yet.' };
+  try {
+    const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:E`);
+    const sinceMs = Number(sinceTimestampMs) || (Date.now() - 8 * 60 * 60 * 1000);
+    const relevant = rows.filter(r => {
+      if (r[1] !== actorName) return false;
+      const t = parseTimestampLoose(r[0]);
+      return t && t.getTime() >= sinceMs;
+    });
+    if (!relevant.length) return { ok: true, note: `No activity recorded for ${actorName} this session.` };
+    const actionsSummary = relevant.map(r => `${r[2]}: ${r[3] || ''}`).join('\n').slice(0, 1500);
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        max_tokens: 150,
+        temperature: 0.3,
+        messages: [
+          { role: 'system', content: 'You write a short (2-3 sentence) shift handoff note for the next staff member taking over a student verification desk, based on a list of actions the outgoing staff member performed this session. Be concise and practical - mention totals and anything worth flagging (errors, unusual patterns). No preamble.' },
+          { role: 'user', content: actionsSummary }
+        ]
+      })
+    });
+    if (!response.ok) throw new Error(`Groq API error (${response.status})`);
+    const data = await response.json();
+    const note = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
+    return { ok: true, note: note.trim() };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+// ---------- Duplicate/typo detection (algorithmic, not AI - fast and
+// reliable for this specific task; comparing every pair with an AI call
+// would be slow and expensive for a large roster) ----------
+function levenshteinDistance(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[m][n];
+}
+
+async function findDuplicateStudents() {
+  const data = await getStudents();
+  if (!data.ok) return { ok: false, error: 'Could not load the roster.' };
+  const named = data.students
+    .filter(s => s.name && s.name.trim().length > 2)
+    .map(s => ({ id: s.id, name: s.name.trim(), appNo: s.appNo, normalized: s.name.trim().toLowerCase().replace(/[^a-z\s]/g, '') }));
+
+  // Bucket by first letter to avoid full O(n^2) comparison across the whole roster
+  const buckets = {};
+  named.forEach(s => {
+    const key = s.normalized[0] || '?';
+    if (!buckets[key]) buckets[key] = [];
+    buckets[key].push(s);
+  });
+
+  const pairs = [];
+  Object.values(buckets).forEach(bucket => {
+    for (let i = 0; i < bucket.length; i++) {
+      for (let j = i + 1; j < bucket.length; j++) {
+        const a = bucket[i], b = bucket[j];
+        if (a.normalized === b.normalized) continue; // exact match isn't a typo case
+        const dist = levenshteinDistance(a.normalized, b.normalized);
+        const maxLen = Math.max(a.normalized.length, b.normalized.length);
+        const similarity = 1 - dist / maxLen;
+        if (similarity >= 0.82 && dist <= 3) {
+          pairs.push({ nameA: a.name, appNoA: a.appNo, idA: a.id, nameB: b.name, appNoB: b.appNo, idB: b.id, similarity: Math.round(similarity * 100) });
+        }
+      }
+    }
+  });
+  pairs.sort((x, y) => y.similarity - x.similarity);
+  return { ok: true, pairs: pairs.slice(0, 50) };
+}
+
+async function findDuplicateHostelStudents() {
+  const data = await getHostelData();
+  if (!data.ok) return { ok: false, error: 'Could not load the hostel roster.' };
+  const named = data.students
+    .filter(s => s.studentName && s.studentName.trim().length > 2)
+    .map(s => ({ id: s.id, name: s.studentName.trim(), appNo: s.applicationNo, normalized: s.studentName.trim().toLowerCase().replace(/[^a-z\s]/g, '') }));
+
+  const buckets = {};
+  named.forEach(s => {
+    const key = s.normalized[0] || '?';
+    if (!buckets[key]) buckets[key] = [];
+    buckets[key].push(s);
+  });
+
+  const pairs = [];
+  Object.values(buckets).forEach(bucket => {
+    for (let i = 0; i < bucket.length; i++) {
+      for (let j = i + 1; j < bucket.length; j++) {
+        const a = bucket[i], b = bucket[j];
+        if (a.normalized === b.normalized) continue;
+        const dist = levenshteinDistance(a.normalized, b.normalized);
+        const maxLen = Math.max(a.normalized.length, b.normalized.length);
+        const similarity = 1 - dist / maxLen;
+        if (similarity >= 0.82 && dist <= 3) {
+          pairs.push({ nameA: a.name, appNoA: a.appNo, idA: a.id, nameB: b.name, appNoB: b.appNo, idB: b.id, similarity: Math.round(similarity * 100) });
+        }
+      }
+    }
+  });
+  pairs.sort((x, y) => y.similarity - x.similarity);
+  return { ok: true, pairs: pairs.slice(0, 50) };
+}
+
 module.exports = {
   normalize, detectColumns, colToLetter, ensureExtraColumns,
   getAllUsers, writeAllUsers, effectivePermissions, capitalizeFirst, ALL_PERMISSION_KEYS,
@@ -1903,5 +2099,6 @@ module.exports = {
   askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
   getStaffLeaderboard, getLoginDigest, undoRecentVerification, undoRecentHostelVerification,
   publicLookupStudent, publicLookupHostelStudent,
-  requestContext
+  requestContext,
+  parseRosterFilterQuery, explainUnusualActivity, generateShiftHandoffNote, findDuplicateStudents, findDuplicateHostelStudents
 };
