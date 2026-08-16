@@ -1105,10 +1105,13 @@ async function recordHeartbeat(userId, actorName) {
   if (!userId) return { ok: false, error: 'Missing userId.' };
   const sessions = await getSetting(ACTIVE_SESSIONS_KEY, {});
   const existing = sessions[userId];
+  const store = requestContext.getStore();
+  const ip = (store && store.ip) || (existing && existing.ip) || '';
   sessions[userId] = {
     actorName: actorName || (existing && existing.actorName) || 'unknown',
     loginTime: (existing && existing.loginTime) || Date.now(),
-    lastHeartbeat: Date.now()
+    lastHeartbeat: Date.now(),
+    ip
   };
   await setSetting(ACTIVE_SESSIONS_KEY, sessions);
   return { ok: true };
@@ -1177,7 +1180,7 @@ async function getOnlineUsers() {
   const cutoff = Date.now() - HEARTBEAT_STALE_MINUTES * 60 * 1000;
   const online = Object.values(sessions)
     .filter(s => s.lastHeartbeat >= cutoff)
-    .map(s => ({ actorName: s.actorName, loginTime: s.loginTime }))
+    .map(s => ({ actorName: s.actorName, loginTime: s.loginTime, lastHeartbeat: s.lastHeartbeat, ip: s.ip || '' }))
     .sort((a, b) => b.loginTime - a.loginTime);
   return { ok: true, users: online };
 }
