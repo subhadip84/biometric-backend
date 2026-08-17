@@ -1826,7 +1826,8 @@ async function parseVoiceCommand(spokenText) {
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'openai/gpt-oss-120b',
-        max_tokens: 150,
+        max_tokens: 600,
+        reasoning_effort: 'low',
         temperature: 0,
         messages: [
           { role: 'system', content: VOICE_COMMAND_SYSTEM_PROMPT },
@@ -1862,7 +1863,8 @@ async function askAiHelpAssistant(question) {
       },
       body: JSON.stringify({
         model: 'openai/gpt-oss-120b',
-        max_tokens: 300,
+        max_tokens: 700,
+        reasoning_effort: 'low',
         messages: [
           { role: 'system', content: HELP_ASSISTANT_SYSTEM_PROMPT },
           { role: 'user', content: String(question || '').slice(0, 500) }
@@ -1909,7 +1911,8 @@ async function parseRosterFilterQuery(query) {
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'openai/gpt-oss-120b',
-        max_tokens: 150,
+        max_tokens: 600,
+        reasoning_effort: 'low',
         temperature: 0,
         messages: [
           { role: 'system', content: ROSTER_FILTER_SYSTEM_PROMPT },
@@ -1939,7 +1942,8 @@ async function explainUnusualActivity(flags) {
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'openai/gpt-oss-120b',
-        max_tokens: 120,
+        max_tokens: 500,
+        reasoning_effort: 'low',
         temperature: 0.3,
         messages: [
           { role: 'system', content: 'You write one short, plain-English sentence (max 30 words) summarizing unusual activity flags for a non-technical staff member at a student verification desk. Be calm and factual, not alarming - these are patterns worth a glance, not confirmed problems. No preamble, just the sentence.' },
@@ -1975,7 +1979,8 @@ async function generateShiftHandoffNote(actorName, sinceTimestampMs) {
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: 'openai/gpt-oss-120b',
-        max_tokens: 150,
+        max_tokens: 600,
+        reasoning_effort: 'low',
         temperature: 0.3,
         messages: [
           { role: 'system', content: 'You write a short (2-3 sentence) shift handoff note for the next staff member taking over a student verification desk, based on a list of actions the outgoing staff member performed this session. Be concise and practical - mention totals and anything worth flagging (errors, unusual patterns). No preamble.' },
