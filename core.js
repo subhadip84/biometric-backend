@@ -1825,7 +1825,7 @@ async function parseVoiceCommand(spokenText) {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: 'openai/gpt-oss-120b',
         max_tokens: 150,
         temperature: 0,
         messages: [
@@ -1861,7 +1861,7 @@ async function askAiHelpAssistant(question) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: 'openai/gpt-oss-120b',
         max_tokens: 300,
         messages: [
           { role: 'system', content: HELP_ASSISTANT_SYSTEM_PROMPT },
@@ -1908,7 +1908,7 @@ async function parseRosterFilterQuery(query) {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: 'openai/gpt-oss-120b',
         max_tokens: 150,
         temperature: 0,
         messages: [
@@ -1938,7 +1938,7 @@ async function explainUnusualActivity(flags) {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: 'openai/gpt-oss-120b',
         max_tokens: 120,
         temperature: 0.3,
         messages: [
@@ -1974,7 +1974,7 @@ async function generateShiftHandoffNote(actorName, sinceTimestampMs) {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: 'openai/gpt-oss-120b',
         max_tokens: 150,
         temperature: 0.3,
         messages: [
