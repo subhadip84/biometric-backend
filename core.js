@@ -1834,7 +1834,7 @@ async function parseVoiceCommand(spokenText) {
         ]
       })
     });
-    if (!response.ok) throw new Error(`Groq API error (${response.status})`);
+    if (!response.ok) { const errText = await response.text(); throw new Error(`Groq API error (${response.status}): ${errText}`); }
     const data = await response.json();
     const raw = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '{}';
     const cleaned = raw.replace(/```json|```/g, '').trim();
@@ -1917,7 +1917,7 @@ async function parseRosterFilterQuery(query) {
         ]
       })
     });
-    if (!response.ok) throw new Error(`Groq API error (${response.status})`);
+    if (!response.ok) { const errText = await response.text(); throw new Error(`Groq API error (${response.status}): ${errText}`); }
     const data = await response.json();
     const raw = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '{}';
     const cleaned = raw.replace(/```json|```/g, '').trim();
@@ -1947,7 +1947,7 @@ async function explainUnusualActivity(flags) {
         ]
       })
     });
-    if (!response.ok) throw new Error(`Groq API error (${response.status})`);
+    if (!response.ok) { const errText = await response.text(); throw new Error(`Groq API error (${response.status}): ${errText}`); }
     const data = await response.json();
     const explanation = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
     return { ok: true, explanation: explanation.trim() };
@@ -1983,7 +1983,7 @@ async function generateShiftHandoffNote(actorName, sinceTimestampMs) {
         ]
       })
     });
-    if (!response.ok) throw new Error(`Groq API error (${response.status})`);
+    if (!response.ok) { const errText = await response.text(); throw new Error(`Groq API error (${response.status}): ${errText}`); }
     const data = await response.json();
     const note = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '';
     return { ok: true, note: note.trim() };
