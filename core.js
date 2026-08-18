@@ -198,6 +198,18 @@ function effectivePermissions(userRecord) {
     all.deleteStudent = false; // hard restriction, also enforced server-side below
     return all;
   }
+  if (userRecord.role === 'viewer') {
+    // Read-only: can see the dashboard, activity log, and export data, but
+    // has zero write permissions - no verify/unverify, no user management,
+    // no imports, no locking, no messaging. Enforced here and, for the one
+    // action that matters most (marking verification status), also
+    // enforced directly in updateStatus/updateHostelStatus server-side.
+    return {
+      viewSummary: true,
+      viewActivityLog: true,
+      downloadCsv: true
+    };
+  }
   if (userRecord.role !== 'admin') {
     // Staff normally has no permissions, but hostelAccess and allowUndo can
     // each be individually delegated to a staff account without promoting
@@ -404,6 +416,7 @@ async function checkLogin(userId, password, deviceInfo) {
     userId: key,
     isAdmin: users[key].role === 'admin' || users[key].role === 'demo',
     isDemo: users[key].role === 'demo',
+    isViewer: users[key].role === 'viewer',
     name: displayName,
     permissions: effectivePermissions(users[key]),
     mustChangePassword: !!users[key].mustChangePassword,
@@ -488,6 +501,9 @@ async function updateStatus(rowId, status, userId) {
   const callerKey = userId ? String(userId) : '';
   if (usersForRoleCheck[callerKey] && usersForRoleCheck[callerKey].role === 'demo') {
     return { ok: false, error: 'Demo accounts cannot mark biometric verification status.' };
+  }
+  if (usersForRoleCheck[callerKey] && usersForRoleCheck[callerKey].role === 'viewer') {
+    return { ok: false, error: 'Viewer accounts have read-only access and cannot mark verification status.' };
   }
 
   const sheetName = await sheetsApi.getMasterSheetName();
@@ -642,7 +658,7 @@ async function createUser(newUserId, newPassword, role, adminPassword, displayNa
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
 
-  role = (role === 'admin' || role === 'demo') ? role : 'staff';
+  role = (role === 'admin' || role === 'demo' || role === 'viewer') ? role : 'staff';
   let name = (displayName && String(displayName).trim()) || '';
 
   const users = await getAllUsers();
@@ -722,10 +738,10 @@ async function updateUserDetails(targetUserId, newName, newRole, permissions, ad
   const users = await getAllUsers();
   if (!key || !users.hasOwnProperty(key)) return { ok: false, error: 'Unknown account.' };
 
-  const role = (newRole === 'admin' || newRole === 'demo') ? newRole : 'staff';
-  if (users[key].role === 'admin' && role === 'staff') {
+  const role = (newRole === 'admin' || newRole === 'demo' || newRole === 'viewer') ? newRole : 'staff';
+  if (users[key].role === 'admin' && role !== 'admin') {
     const adminCount = Object.keys(users).filter(k => users[k].role === 'admin').length;
-    if (adminCount <= 1) return { ok: false, error: 'Cannot demote the only remaining admin account to staff.' };
+    if (adminCount <= 1) return { ok: false, error: 'Cannot demote the only remaining admin account.' };
   }
 
   const contactCheck = await findContactConflicts(mobile, email, key);
@@ -1548,6 +1564,9 @@ async function updateHostelStatus(rowId, status, userId) {
   const callerKey = userId ? String(userId) : '';
   if (users[callerKey] && users[callerKey].role === 'demo') {
     return { ok: false, error: 'Demo accounts cannot mark face capture status.' };
+  }
+  if (users[callerKey] && users[callerKey].role === 'viewer') {
+    return { ok: false, error: 'Viewer accounts have read-only access and cannot mark face capture status.' };
   }
 
   const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
