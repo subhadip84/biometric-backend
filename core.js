@@ -2102,6 +2102,42 @@ async function findDuplicateHostelStudents() {
   return { ok: true, pairs: pairs.slice(0, 50) };
 }
 
+// ---------- Custom report templates ----------
+// Templates are shared/global (not per-user) - a report like "Weekly Site B
+// Status" should be runnable by any admin, not just whoever created it.
+const REPORT_TEMPLATES_KEY = 'customReportTemplates';
+
+async function getReportTemplates() {
+  const templates = await getSetting(REPORT_TEMPLATES_KEY, []);
+  return { ok: true, templates };
+}
+
+async function saveReportTemplate(name, config, actor) {
+  const trimmedName = String(name || '').trim();
+  if (!trimmedName) return { ok: false, error: 'Give the report a name.' };
+  const templates = await getSetting(REPORT_TEMPLATES_KEY, []);
+  const template = {
+    id: 'report_' + Date.now(),
+    name: trimmedName,
+    config: config || {},
+    createdBy: actor || 'unknown',
+    createdAt: Date.now()
+  };
+  templates.push(template);
+  await setSetting(REPORT_TEMPLATES_KEY, templates);
+  await logActivity(actor || 'unknown', 'Saved Report Template', trimmedName);
+  return { ok: true, template };
+}
+
+async function deleteReportTemplate(id, actor) {
+  const templates = await getSetting(REPORT_TEMPLATES_KEY, []);
+  const target = templates.find(t => t.id === id);
+  const filtered = templates.filter(t => t.id !== id);
+  await setSetting(REPORT_TEMPLATES_KEY, filtered);
+  if (target) await logActivity(actor || 'unknown', 'Deleted Report Template', target.name);
+  return { ok: true };
+}
+
 module.exports = {
   normalize, detectColumns, colToLetter, ensureExtraColumns,
   getAllUsers, writeAllUsers, effectivePermissions, capitalizeFirst, ALL_PERMISSION_KEYS,
@@ -2124,5 +2160,6 @@ module.exports = {
   getStaffLeaderboard, getLoginDigest, undoRecentVerification, undoRecentHostelVerification,
   publicLookupStudent, publicLookupHostelStudent,
   requestContext,
-  parseRosterFilterQuery, explainUnusualActivity, generateShiftHandoffNote, findDuplicateStudents, findDuplicateHostelStudents
+  parseRosterFilterQuery, explainUnusualActivity, generateShiftHandoffNote, findDuplicateStudents, findDuplicateHostelStudents,
+  getReportTemplates, saveReportTemplate, deleteReportTemplate
 };
