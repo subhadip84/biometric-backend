@@ -54,14 +54,18 @@ async function runDailyBackup() {
     if (!recipient) throw new Error('BACKUP_EMAIL_TO is not set in Render - no address to send the backup to.');
 
     const drive = await getDriveClient();
-    const spreadsheetMeta = await drive.files.get({ fileId: sheetsApi.SPREADSHEET_ID, fields: 'name' });
+    const spreadsheetMeta = await sheetsApi.withQuotaRetry(() =>
+      drive.files.get({ fileId: sheetsApi.SPREADSHEET_ID, fields: 'name' })
+    );
     const sheetName = spreadsheetMeta.data.name;
 
     // Exports the spreadsheet as XLSX bytes directly - a read-only operation
     // that never creates any file in Drive, so no storage quota is touched.
-    const exportResponse = await drive.files.export(
-      { fileId: sheetsApi.SPREADSHEET_ID, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
-      { responseType: 'arraybuffer' }
+    const exportResponse = await sheetsApi.withQuotaRetry(() =>
+      drive.files.export(
+        { fileId: sheetsApi.SPREADSHEET_ID, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+        { responseType: 'arraybuffer' }
+      )
     );
     const fileBuffer = Buffer.from(exportResponse.data);
 
