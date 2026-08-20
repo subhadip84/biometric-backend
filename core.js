@@ -1356,10 +1356,16 @@ async function exportRosterAsCsv(statusFilter, siteFilter) {
   const wantStatus = statusFilter && statusFilter !== 'all' ? statusFilter : null;
   const wantSite = siteFilter && siteFilter !== 'all' ? String(siteFilter).trim().toLowerCase() : null;
 
-  const filteredRows = [['Sl. No.', ...headers]];
+  let serialColIndex = -1;
+  for (let h = 0; h < headers.length; h++) {
+    const normHeader = normalize(headers[h]);
+    if (['s', 'slno', 'srno', 'sno', 'serialno', 'serialnumber'].includes(normHeader)) { serialColIndex = h; break; }
+  }
+
+  const filteredRows = [serialColIndex > -1 ? headers : ['Sl. No.', ...headers]];
   let serialCounter = 1;
   for (let r = 1; r < data.length; r++) {
-    const row = data[r];
+    let row = data[r];
     if (wantStatus) {
       const statusVal = col.status > -1 ? String(row[col.status] || '').trim().toLowerCase() : '';
       const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true' || statusVal === 'completed' || statusVal === 'verified');
@@ -1370,7 +1376,13 @@ async function exportRosterAsCsv(statusFilter, siteFilter) {
       const siteVal = col.siteCode > -1 ? String(row[col.siteCode] || '').trim().toLowerCase() : '';
       if (siteVal !== wantSite) continue;
     }
-    filteredRows.push([serialCounter, ...row]);
+    if (serialColIndex > -1) {
+      row = row.slice();
+      row[serialColIndex] = serialCounter;
+      filteredRows.push(row);
+    } else {
+      filteredRows.push([serialCounter, ...row]);
+    }
     serialCounter++;
   }
 
@@ -1655,18 +1667,30 @@ async function exportHostelAsCsv(statusFilter) {
   let col = detectHostelColumns(headers);
   col = await ensureHostelExtraColumns(headers, col);
 
+  let serialColIndex = -1;
+  for (let h = 0; h < headers.length; h++) {
+    const normHeader = normalize(headers[h]);
+    if (['s', 'slno', 'srno', 'sno', 'serialno', 'serialnumber'].includes(normHeader)) { serialColIndex = h; break; }
+  }
+
   const wantStatus = statusFilter && statusFilter !== 'all' ? statusFilter : null;
-  const rows = [['Sl. No.', ...headers]];
+  const rows = [serialColIndex > -1 ? headers : ['Sl. No.', ...headers]];
   let serialCounter = 1;
   for (let r = 1; r < data.length; r++) {
-    const row = data[r];
+    let row = data[r];
     if (wantStatus) {
       const statusVal = String(row[col.status] || '').trim().toLowerCase();
       const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true');
       if (wantStatus === 'done' && !isDone) continue;
       if (wantStatus === 'pending' && isDone) continue;
     }
-    rows.push([serialCounter, ...row]);
+    if (serialColIndex > -1) {
+      row = row.slice();
+      row[serialColIndex] = serialCounter;
+      rows.push(row);
+    } else {
+      rows.push([serialCounter, ...row]);
+    }
     serialCounter++;
   }
   const csvText = rows.map(row => row.map(csvEscape).join(',')).join('\r\n');
@@ -1680,13 +1704,28 @@ async function exportHostelVerifiedTodayAsCsv() {
   let col = detectHostelColumns(headers);
   col = await ensureHostelExtraColumns(headers, col);
 
+  let serialColIndex = -1;
+  for (let h = 0; h < headers.length; h++) {
+    const normHeader = normalize(headers[h]);
+    if (['s', 'slno', 'srno', 'sno', 'serialno', 'serialnumber'].includes(normHeader)) { serialColIndex = h; break; }
+  }
+
   const todayStr = getISTTodayDateString();
-  const rows = [['Sl. No.', ...headers]];
+  const rows = [serialColIndex > -1 ? headers : ['Sl. No.', ...headers]];
   let serialCounter = 1;
   for (let r = 1; r < data.length; r++) {
-    const row = data[r];
+    let row = data[r];
     const verifiedAt = String(row[col.verifiedAt] || '');
-    if (verifiedAt.indexOf(todayStr) === 0) { rows.push([serialCounter, ...row]); serialCounter++; }
+    if (verifiedAt.indexOf(todayStr) === 0) {
+      if (serialColIndex > -1) {
+        row = row.slice();
+        row[serialColIndex] = serialCounter;
+        rows.push(row);
+      } else {
+        rows.push([serialCounter, ...row]);
+      }
+      serialCounter++;
+    }
   }
   const csvText = rows.map(row => row.map(csvEscape).join(',')).join('\r\n');
   return { ok: true, csv: csvText, rowCount: rows.length - 1, filename: `hostel_verified_today_${Date.now()}.csv` };
