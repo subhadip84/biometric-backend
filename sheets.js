@@ -43,9 +43,11 @@ function getSheetsClient() {
 // restart. This is a lightweight metadata call, not a performance concern
 // for a low-traffic internal tool.
 async function getSheetTitles() {
-  const sheets = await getSheetsClient();
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
-  return meta.data.sheets.map(s => s.properties.title);
+  return withQuotaRetry(async () => {
+    const sheets = await getSheetsClient();
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+    return meta.data.sheets.map(s => s.properties.title);
+  });
 }
 
 async function getMasterSheetName() {
@@ -60,10 +62,12 @@ async function sheetExists(name) {
 }
 
 async function createSheet(name, headerRow) {
-  const sheets = await getSheetsClient();
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: SPREADSHEET_ID,
-    requestBody: { requests: [{ addSheet: { properties: { title: name } } }] }
+  await withQuotaRetry(async () => {
+    const sheets = await getSheetsClient();
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { requests: [{ addSheet: { properties: { title: name } } }] }
+    });
   });
   if (headerRow && headerRow.length) {
     await writeRange(`${name}!A1`, [headerRow]);
@@ -83,11 +87,44 @@ async function ensureSheet(name, headerRow) {
 // identical reads, quickly hitting Google's per-minute read quota. Any
 // write clears the whole cache, so nothing stale is ever served after a
 // change - this only smooths out redundant reads within a tight window.
-const READ_CACHE_TTL_MS = 15000;
+const READ_CACHE_TTL_MS = 30000;
 const readCache = new Map();
 
 function clearReadCache() {
   readCache.clear();
+}
+
+// Detects Google API quota/rate-limit errors specifically (HTTP 429, or the
+// "Quota exceeded" / RESOURCE_EXHAUSTED message Google Sheets API returns),
+// as opposed to other errors (auth failures, bad ranges, etc.) which should
+// fail immediately rather than being retried.
+function isQuotaError(err) {
+  const code = err && (err.code || (err.response && err.response.status));
+  if (code === 429) return true;
+  const message = String((err && err.message) || '').toLowerCase();
+  return message.includes('quota exceeded') || message.includes('resource_exhausted') || message.includes('rate limit');
+}
+
+// Wraps any Google API call with automatic retry-with-backoff specifically
+// for quota/rate-limit errors. A transient quota hit (common when several
+// dashboard widgets or several concurrent users all read around the same
+// moment) becomes invisible to the person using the app - it just takes an
+// extra second - rather than surfacing as a hard error. Other kinds of
+// errors (bad credentials, invalid range, etc.) are not retried and fail
+// immediately, since retrying those would just waste time before failing
+// anyway.
+async function withQuotaRetry(fn, maxAttempts = 4) {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err) {
+      attempt++;
+      if (!isQuotaError(err) || attempt >= maxAttempts) throw err;
+      const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), 8000) + Math.floor(Math.random() * 300);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
 }
 
 const inFlightReads = new Map();
@@ -105,12 +142,14 @@ async function readRange(rangeA1) {
   }
   const promise = (async () => {
     try {
-      const sheets = await getSheetsClient();
-      const res = await sheets.spreadsheets.values.get({
-        spreadsheetId: SPREADSHEET_ID,
-        range: rangeA1
+      const data = await withQuotaRetry(async () => {
+        const sheets = await getSheetsClient();
+        const res = await sheets.spreadsheets.values.get({
+          spreadsheetId: SPREADSHEET_ID,
+          range: rangeA1
+        });
+        return res.data.values || [];
       });
-      const data = res.data.values || [];
       readCache.set(rangeA1, { data, time: Date.now() });
       return data;
     } finally {
@@ -123,12 +162,14 @@ async function readRange(rangeA1) {
 
 async function writeRange(rangeA1, values) {
   clearReadCache();
-  const sheets = await getSheetsClient();
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: SPREADSHEET_ID,
-    range: rangeA1,
-    valueInputOption: 'USER_ENTERED',
-    requestBody: { values }
+  await withQuotaRetry(async () => {
+    const sheets = await getSheetsClient();
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: rangeA1,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values }
+    });
   });
 }
 
@@ -139,62 +180,72 @@ async function writeRange(rangeA1, values) {
 async function batchWriteRanges(updates) {
   if (!updates.length) return;
   clearReadCache();
-  const sheets = await getSheetsClient();
-  await sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId: SPREADSHEET_ID,
-    requestBody: {
-      valueInputOption: 'USER_ENTERED',
-      data: updates.map(u => ({ range: u.range, values: u.values }))
-    }
+  await withQuotaRetry(async () => {
+    const sheets = await getSheetsClient();
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: {
+        valueInputOption: 'USER_ENTERED',
+        data: updates.map(u => ({ range: u.range, values: u.values }))
+      }
+    });
   });
 }
 
 async function appendRows(sheetName, values) {
   clearReadCache();
-  const sheets = await getSheetsClient();
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SPREADSHEET_ID,
-    range: `${sheetName}!A1`,
-    valueInputOption: 'USER_ENTERED',
-    insertDataOption: 'INSERT_ROWS',
-    requestBody: { values }
+  await withQuotaRetry(async () => {
+    const sheets = await getSheetsClient();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `${sheetName}!A1`,
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values }
+    });
   });
 }
 
 async function clearRange(rangeA1) {
   clearReadCache();
-  const sheets = await getSheetsClient();
-  await sheets.spreadsheets.values.clear({
-    spreadsheetId: SPREADSHEET_ID,
-    range: rangeA1
+  await withQuotaRetry(async () => {
+    const sheets = await getSheetsClient();
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId: SPREADSHEET_ID,
+      range: rangeA1
+    });
   });
 }
 
 async function getSheetIdByName(name) {
-  const sheets = await getSheetsClient();
-  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
-  const sheet = meta.data.sheets.find(s => s.properties.title === name);
-  return sheet ? sheet.properties.sheetId : null;
+  return withQuotaRetry(async () => {
+    const sheets = await getSheetsClient();
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+    const sheet = meta.data.sheets.find(s => s.properties.title === name);
+    return sheet ? sheet.properties.sheetId : null;
+  });
 }
 
 async function deleteRow(sheetName, rowNumber1Indexed) {
   clearReadCache();
   const sheetId = await getSheetIdByName(sheetName);
-  const sheets = await getSheetsClient();
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: SPREADSHEET_ID,
-    requestBody: {
-      requests: [{
-        deleteDimension: {
-          range: {
-            sheetId,
-            dimension: 'ROWS',
-            startIndex: rowNumber1Indexed - 1,
-            endIndex: rowNumber1Indexed
+  await withQuotaRetry(async () => {
+    const sheets = await getSheetsClient();
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: {
+        requests: [{
+          deleteDimension: {
+            range: {
+              sheetId,
+              dimension: 'ROWS',
+              startIndex: rowNumber1Indexed - 1,
+              endIndex: rowNumber1Indexed
+            }
           }
-        }
-      }]
-    }
+        }]
+      }
+    });
   });
 }
 
@@ -208,6 +259,7 @@ module.exports = {
   clearRange,
   deleteRow,
   clearReadCache,
+  withQuotaRetry,
   getAuthClient,
   SPREADSHEET_ID,
   USER_SHEET_NAME,
