@@ -98,6 +98,7 @@ const API_FUNCTIONS = {
   deleteHostelStudent: core.deleteHostelStudent,
   exportHostelAsCsv: core.exportHostelAsCsv,
   exportHostelVerifiedTodayAsCsv: core.exportHostelVerifiedTodayAsCsv,
+  exportHostelVerifiedLastDayAsCsv: core.exportHostelVerifiedLastDayAsCsv,
   importNewHostelData: core.importNewHostelData,
   importHostelVerificationUpdates: core.importHostelVerificationUpdates,
   getLastHostelImportInfo: core.getLastHostelImportInfo,
