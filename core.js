@@ -49,6 +49,15 @@ function getISTTodayDateString() {
   return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
+function getISTLastDayDateString() {
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(yesterday);
+  const get = type => parts.find(p => p.type === type).value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
 function normalize(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
@@ -1731,6 +1740,40 @@ async function exportHostelVerifiedTodayAsCsv() {
   return { ok: true, csv: csvText, rowCount: rows.length - 1, filename: `hostel_verified_today_${Date.now()}.csv` };
 }
 
+async function exportHostelVerifiedLastDayAsCsv() {
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  if (!data.length) return { ok: false, error: 'Hostel data is empty.' };
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  let serialColIndex = -1;
+  for (let h = 0; h < headers.length; h++) {
+    const normHeader = normalize(headers[h]);
+    if (['s', 'slno', 'srno', 'sno', 'serialno', 'serialnumber'].includes(normHeader)) { serialColIndex = h; break; }
+  }
+
+  const lastDayStr = getISTLastDayDateString();
+  const rows = [serialColIndex > -1 ? headers : ['Sl. No.', ...headers]];
+  let serialCounter = 1;
+  for (let r = 1; r < data.length; r++) {
+    let row = data[r];
+    const verifiedAt = String(row[col.verifiedAt] || '');
+    if (verifiedAt.indexOf(lastDayStr) === 0) {
+      if (serialColIndex > -1) {
+        row = row.slice();
+        row[serialColIndex] = serialCounter;
+        rows.push(row);
+      } else {
+        rows.push([serialCounter, ...row]);
+      }
+      serialCounter++;
+    }
+  }
+  const csvText = rows.map(row => row.map(csvEscape).join(',')).join('\r\n');
+  return { ok: true, csv: csvText, rowCount: rows.length - 1, filename: `hostel_verified_last_day_${Date.now()}.csv` };
+}
+
 async function importNewHostelData(uploadedHeaders, uploadedRows, adminPassword, actor) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
@@ -2186,7 +2229,7 @@ module.exports = {
   logSessionIp, logSessionEnd, recordHeartbeat, clearActiveSession, checkStaleSessions,
   exportRosterAsCsv,
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
-  getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv,
+  getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv, exportHostelVerifiedLastDayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo,
   askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
   getStaffLeaderboard, getLoginDigest, undoRecentVerification, undoRecentHostelVerification,
