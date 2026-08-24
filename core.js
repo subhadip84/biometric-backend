@@ -107,6 +107,12 @@ function detectColumns(headers) {
   col.firstVerifiedBy = firstVerifiedByCol;
   col.firstVerifiedAt = firstVerifiedAtCol;
 
+  let notesCol = -1;
+  for (let i = 0; i < headers.length; i++) {
+    if (normalize(headers[i]) === 'notes') { notesCol = i; break; }
+  }
+  col.notes = notesCol;
+
   return col;
 }
 
@@ -130,6 +136,7 @@ async function ensureExtraColumns(sheetName, headers, col) {
   if (col.verifiedAt === -1) { col.verifiedAt = headers.length + additions.length; additions.push('Verified At'); changed = true; }
   if (col.firstVerifiedBy === -1) { col.firstVerifiedBy = headers.length + additions.length; additions.push('First Verified By'); changed = true; }
   if (col.firstVerifiedAt === -1) { col.firstVerifiedAt = headers.length + additions.length; additions.push('First Verified At'); changed = true; }
+  if (col.notes === -1) { col.notes = headers.length + additions.length; additions.push('Notes'); changed = true; }
 
   if (changed) {
     const startCol = colToLetter(headers.length);
@@ -477,6 +484,7 @@ async function getStudents() {
     const verifiedAtVal = col.verifiedAt > -1 ? (row[col.verifiedAt] || '') : '';
     const firstVerifiedByVal = col.firstVerifiedBy > -1 ? (row[col.firstVerifiedBy] || '') : '';
     const firstVerifiedAtVal = col.firstVerifiedAt > -1 ? (row[col.firstVerifiedAt] || '') : '';
+    const notesVal = col.notes > -1 ? (row[col.notes] || '') : '';
 
     students.push({
       id: 'row' + (r + 1),
@@ -494,7 +502,8 @@ async function getStudents() {
       verifiedByIsAdmin: isAdminLabel(String(verifiedByVal)),
       firstVerifiedBy: String(firstVerifiedByVal),
       firstVerifiedAt: String(firstVerifiedAtVal),
-      firstVerifiedByIsAdmin: isAdminLabel(String(firstVerifiedByVal))
+      firstVerifiedByIsAdmin: isAdminLabel(String(firstVerifiedByVal)),
+      notes: String(notesVal)
     });
   }
 
@@ -562,6 +571,89 @@ async function updateStatus(rowId, status, userId) {
   await logActivity(verifierName, status === 'done' ? 'Verified' : 'Marked Pending', `${studentName} (row ${rowNum})`);
 
   return { ok: true, verifiedByRole: verifierRole };
+}
+
+async function bulkUpdateStatus(rowIds, status, userId) {
+  if (status !== 'done' && status !== 'pending') {
+    return { ok: false, error: "status must be 'done' or 'pending'" };
+  }
+  const users = await getAllUsers();
+  const callerKey = userId ? String(userId) : '';
+  if (users[callerKey] && users[callerKey].role === 'demo') {
+    return { ok: false, error: 'Demo accounts cannot mark biometric verification status.' };
+  }
+  if (users[callerKey] && users[callerKey].role === 'viewer') {
+    return { ok: false, error: 'Viewer accounts have read-only access and cannot mark verification status.' };
+  }
+
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectColumns(headers);
+  col = await ensureExtraColumns(sheetName, headers, col);
+
+  const value = status === 'done' ? 'Done' : 'Not Done';
+  const whoLabel = userId ? String(userId) : 'unknown';
+  const verifierRole = (users[whoLabel] && users[whoLabel].role === 'admin') ? 'admin' : 'staff';
+  const verifierName = (users[whoLabel] && users[whoLabel].name) ? users[whoLabel].name : whoLabel;
+  const storedVerifiedBy = verifierName + (verifierRole === 'admin' ? ' [Admin]' : '');
+  const timestamp = getISTTimestampForStorage();
+
+  const allUpdates = [];
+  let updatedCount = 0;
+  let skippedLocked = 0;
+  const updatedNames = [];
+
+  rowIds.forEach(rowId => {
+    const rowNum = parseInt(String(rowId).replace('row', ''), 10);
+    if (!rowNum || rowNum < 2) return;
+    const row = data[rowNum - 1] || [];
+    const currentLock = String(row[col.lock] || '').trim().toLowerCase();
+    if (currentLock === 'yes') { skippedLocked++; return; }
+
+    allUpdates.push({ range: `${sheetName}!${colToLetter(col.status)}${rowNum}`, values: [[value]] });
+    allUpdates.push({ range: `${sheetName}!${colToLetter(col.lock)}${rowNum}`, values: [['Yes']] });
+    allUpdates.push({ range: `${sheetName}!${colToLetter(col.verifiedBy)}${rowNum}`, values: [[storedVerifiedBy]] });
+    allUpdates.push({ range: `${sheetName}!${colToLetter(col.verifiedAt)}${rowNum}`, values: [[timestamp]] });
+
+    const existingFirstVerifiedBy = String(row[col.firstVerifiedBy] || '').trim();
+    if (!existingFirstVerifiedBy) {
+      allUpdates.push({ range: `${sheetName}!${colToLetter(col.firstVerifiedBy)}${rowNum}`, values: [[storedVerifiedBy]] });
+      allUpdates.push({ range: `${sheetName}!${colToLetter(col.firstVerifiedAt)}${rowNum}`, values: [[timestamp]] });
+    }
+
+    updatedCount++;
+    const studentName = col.name > -1 ? String(row[col.name] || '') : '';
+    if (studentName) updatedNames.push(studentName);
+  });
+
+  if (allUpdates.length) await sheetsApi.batchWriteRanges(allUpdates);
+
+  if (updatedCount) {
+    const summary = updatedNames.slice(0, 5).join(', ') + (updatedNames.length > 5 ? ` and ${updatedNames.length - 5} more` : '');
+    await logActivity(verifierName, status === 'done' ? 'Bulk Verified' : 'Bulk Marked Pending', `${updatedCount} student(s): ${summary}`);
+  }
+
+  return { ok: true, updatedCount, skippedLocked };
+}
+
+async function updateStudentNote(rowId, note, actor) {
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectColumns(headers);
+  col = await ensureExtraColumns(sheetName, headers, col);
+
+  const rowNum = parseInt(String(rowId).replace('row', ''), 10);
+  if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid student id.' };
+
+  await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.notes)}${rowNum}`, [[String(note || '').slice(0, 2000)]]);
+
+  const row = data[rowNum - 1] || [];
+  const studentName = col.name > -1 ? String(row[col.name] || '') : '';
+  await logActivity(actor || 'unknown', 'Updated Note', `${studentName} (row ${rowNum})`);
+
+  return { ok: true };
 }
 
 async function adminUnlock(rowId, password, actor) {
@@ -1505,6 +1597,7 @@ function detectHostelColumns(headers) {
   col.verifiedBy = verifiedByCol;
   col.firstVerifiedBy = firstVerifiedByCol;
   col.firstVerifiedAt = firstVerifiedAtCol;
+  if (col.notes === undefined) col.notes = -1;
   return col;
 }
 
@@ -1516,6 +1609,7 @@ async function ensureHostelExtraColumns(headers, col) {
   if (col.verifiedBy === -1) { col.verifiedBy = headers.length + additions.length; additions.push('Verified By'); }
   if (col.firstVerifiedBy === -1) { col.firstVerifiedBy = headers.length + additions.length; additions.push('First Verified By'); }
   if (col.firstVerifiedAt === -1) { col.firstVerifiedAt = headers.length + additions.length; additions.push('First Verified At'); }
+  if (col.notes === -1) { col.notes = headers.length + additions.length; additions.push('Notes'); }
   if (additions.length) {
     await sheetsApi.writeRange(`${HOSTEL_SHEET_NAME}!${colToLetter(headers.length)}1`, [additions]);
   }
@@ -1561,7 +1655,8 @@ async function getHostelData() {
       verifiedAt: String(row[col.verifiedAt] || ''),
       verifiedBy: String(row[col.verifiedBy] || ''),
       firstVerifiedBy: String(row[col.firstVerifiedBy] || ''),
-      firstVerifiedAt: String(row[col.firstVerifiedAt] || '')
+      firstVerifiedAt: String(row[col.firstVerifiedAt] || ''),
+      notes: String(row[col.notes] || '')
     });
   }
   return { ok: true, students };
@@ -1621,6 +1716,90 @@ async function updateHostelStatus(rowId, status, userId) {
 
   const name = col['studentname'] > -1 ? String(row[col['studentname']] || '') : '';
   await logActivity(callerName, status === 'done' ? 'Hostel Face Capture Verified' : 'Hostel Marked Pending', `${name} (row ${rowNum})`);
+  return { ok: true };
+}
+
+async function bulkUpdateHostelStatus(rowIds, status, userId) {
+  if (status !== 'done' && status !== 'pending') {
+    return { ok: false, error: "status must be 'done' or 'pending'" };
+  }
+  const users = await getAllUsers();
+  const callerKey = userId ? String(userId) : '';
+  if (users[callerKey] && users[callerKey].role === 'demo') {
+    return { ok: false, error: 'Demo accounts cannot mark face capture status.' };
+  }
+  if (users[callerKey] && users[callerKey].role === 'viewer') {
+    return { ok: false, error: 'Viewer accounts have read-only access and cannot mark face capture status.' };
+  }
+
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const value = status === 'done' ? 'Done' : 'Not Done';
+  const timestamp = getISTTimestampForStorage();
+  const caller = users[callerKey] || {};
+  const callerName = caller.name || callerKey || 'unknown';
+  let roleTag = '';
+  if (caller.role === 'admin') roleTag = ' [Admin]';
+  else if (caller.role === 'demo') roleTag = ' [Demo]';
+  else if (caller.role === 'staff' && caller.permissions && caller.permissions.hostelAccess) roleTag = ' [Hosteller]';
+
+  const allUpdates = [];
+  let updatedCount = 0;
+  let skippedLocked = 0;
+  const updatedNames = [];
+
+  rowIds.forEach(rowId => {
+    const rowNum = parseInt(String(rowId).replace('hrow', ''), 10);
+    if (!rowNum || rowNum < 2) return;
+    const row = data[rowNum - 1] || [];
+    if (String(row[col.lock] || '').trim().toLowerCase() === 'yes') { skippedLocked++; return; }
+
+    const existingFirstVerifiedBy = String(row[col.firstVerifiedBy] || '').trim();
+    const isRevision = !!existingFirstVerifiedBy;
+    const verifiedByLabel = callerName + roleTag + (isRevision ? ' (Revised)' : '');
+
+    allUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.status)}${rowNum}`, values: [[value]] });
+    allUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.lock)}${rowNum}`, values: [['Yes']] });
+    allUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.verifiedAt)}${rowNum}`, values: [[timestamp]] });
+    allUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.verifiedBy)}${rowNum}`, values: [[verifiedByLabel]] });
+    if (!existingFirstVerifiedBy) {
+      allUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.firstVerifiedBy)}${rowNum}`, values: [[callerName + roleTag]] });
+      allUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.firstVerifiedAt)}${rowNum}`, values: [[timestamp]] });
+    }
+
+    updatedCount++;
+    const studentName = col['studentname'] > -1 ? String(row[col['studentname']] || '') : '';
+    if (studentName) updatedNames.push(studentName);
+  });
+
+  if (allUpdates.length) await sheetsApi.batchWriteRanges(allUpdates);
+
+  if (updatedCount) {
+    const summary = updatedNames.slice(0, 5).join(', ') + (updatedNames.length > 5 ? ` and ${updatedNames.length - 5} more` : '');
+    await logActivity(callerName, status === 'done' ? 'Bulk Hostel Verified' : 'Bulk Hostel Marked Pending', `${updatedCount} student(s): ${summary}`);
+  }
+
+  return { ok: true, updatedCount, skippedLocked };
+}
+
+async function updateHostelStudentNote(rowId, note, actor) {
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const rowNum = parseInt(String(rowId).replace('hrow', ''), 10);
+  if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid record id.' };
+
+  await sheetsApi.writeRange(`${HOSTEL_SHEET_NAME}!${colToLetter(col.notes)}${rowNum}`, [[String(note || '').slice(0, 2000)]]);
+
+  const row = data[rowNum - 1] || [];
+  const studentName = col['studentname'] > -1 ? String(row[col['studentname']] || '') : '';
+  await logActivity(actor || 'unknown', 'Updated Note', `${studentName} (row ${rowNum})`);
+
   return { ok: true };
 }
 
@@ -2236,5 +2415,6 @@ module.exports = {
   publicLookupStudent, publicLookupHostelStudent,
   requestContext,
   parseRosterFilterQuery, explainUnusualActivity, generateShiftHandoffNote, findDuplicateStudents, findDuplicateHostelStudents,
-  getReportTemplates, saveReportTemplate, deleteReportTemplate
+  getReportTemplates, saveReportTemplate, deleteReportTemplate,
+  bulkUpdateStatus, updateStudentNote, bulkUpdateHostelStatus, updateHostelStudentNote
 };
