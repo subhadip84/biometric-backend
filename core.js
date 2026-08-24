@@ -113,6 +113,13 @@ function detectColumns(headers) {
   }
   col.notes = notesCol;
 
+  let photoUrlCol = -1;
+  for (let i = 0; i < headers.length; i++) {
+    const norm = normalize(headers[i]);
+    if (norm === 'photourl' || norm === 'photo') { photoUrlCol = i; break; }
+  }
+  col.photoUrl = photoUrlCol;
+
   return col;
 }
 
@@ -137,6 +144,7 @@ async function ensureExtraColumns(sheetName, headers, col) {
   if (col.firstVerifiedBy === -1) { col.firstVerifiedBy = headers.length + additions.length; additions.push('First Verified By'); changed = true; }
   if (col.firstVerifiedAt === -1) { col.firstVerifiedAt = headers.length + additions.length; additions.push('First Verified At'); changed = true; }
   if (col.notes === -1) { col.notes = headers.length + additions.length; additions.push('Notes'); changed = true; }
+  if (col.photoUrl === -1) { col.photoUrl = headers.length + additions.length; additions.push('Photo URL'); changed = true; }
 
   if (changed) {
     const startCol = colToLetter(headers.length);
@@ -485,6 +493,7 @@ async function getStudents() {
     const firstVerifiedByVal = col.firstVerifiedBy > -1 ? (row[col.firstVerifiedBy] || '') : '';
     const firstVerifiedAtVal = col.firstVerifiedAt > -1 ? (row[col.firstVerifiedAt] || '') : '';
     const notesVal = col.notes > -1 ? (row[col.notes] || '') : '';
+    const photoUrlVal = col.photoUrl > -1 ? (row[col.photoUrl] || '') : '';
 
     students.push({
       id: 'row' + (r + 1),
@@ -503,7 +512,8 @@ async function getStudents() {
       firstVerifiedBy: String(firstVerifiedByVal),
       firstVerifiedAt: String(firstVerifiedAtVal),
       firstVerifiedByIsAdmin: isAdminLabel(String(firstVerifiedByVal)),
-      notes: String(notesVal)
+      notes: String(notesVal),
+      photoUrl: String(photoUrlVal)
     });
   }
 
@@ -1598,6 +1608,7 @@ function detectHostelColumns(headers) {
   col.firstVerifiedBy = firstVerifiedByCol;
   col.firstVerifiedAt = firstVerifiedAtCol;
   if (col.notes === undefined) col.notes = -1;
+  if (col.photoUrl === undefined) col.photoUrl = (col['photourl'] !== undefined ? col['photourl'] : (col['photo'] !== undefined ? col['photo'] : -1));
   return col;
 }
 
@@ -1610,6 +1621,7 @@ async function ensureHostelExtraColumns(headers, col) {
   if (col.firstVerifiedBy === -1) { col.firstVerifiedBy = headers.length + additions.length; additions.push('First Verified By'); }
   if (col.firstVerifiedAt === -1) { col.firstVerifiedAt = headers.length + additions.length; additions.push('First Verified At'); }
   if (col.notes === -1) { col.notes = headers.length + additions.length; additions.push('Notes'); }
+  if (col.photoUrl === -1) { col.photoUrl = headers.length + additions.length; additions.push('Photo URL'); }
   if (additions.length) {
     await sheetsApi.writeRange(`${HOSTEL_SHEET_NAME}!${colToLetter(headers.length)}1`, [additions]);
   }
@@ -1656,7 +1668,8 @@ async function getHostelData() {
       verifiedBy: String(row[col.verifiedBy] || ''),
       firstVerifiedBy: String(row[col.firstVerifiedBy] || ''),
       firstVerifiedAt: String(row[col.firstVerifiedAt] || ''),
-      notes: String(row[col.notes] || '')
+      notes: String(row[col.notes] || ''),
+      photoUrl: String(row[col.photoUrl] || '')
     });
   }
   return { ok: true, students };
