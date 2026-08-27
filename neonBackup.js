@@ -1,9 +1,17 @@
-// Backs up the current roster and hostel data into a Neon (Postgres) database
-// as a secondary copy. Google Sheets remains the live, primary data source
-// for the app at all times - this is a one-way, on-demand snapshot copy,
-// not a live sync. Each run fully replaces the backup tables' contents with
-// whatever is currently in the sheets, so the backup always reflects the
-// most recent snapshot taken, not a running history.
+// Backs up any chosen sheet(s) from the spreadsheet into a Neon (Postgres)
+// database as a secondary copy. Google Sheets remains the live, primary
+// data source for the app at all times - this is a one-way, on-demand
+// snapshot copy, not a live sync. Each run fully replaces the backup
+// table's contents for each sheet with whatever is currently in that
+// sheet, so the backup always reflects the most recent snapshot taken,
+// not a running history.
+//
+// This is intentionally generic rather than hardcoded to specific sheets:
+// each sheet gets its own Postgres table (name derived from the sheet's
+// own name), storing every row as a JSONB object keyed by that sheet's
+// own column headers. This means it works for any sheet - roster, hostel,
+// user accounts, activity log, or anything added later - without needing
+// to know its column structure in advance.
 
 const { Pool } = require('pg');
 
@@ -18,102 +26,71 @@ function getPool() {
   return pool;
 }
 
-async function ensureTables(client) {
+// Turns a sheet's own name into a safe, predictable Postgres table name -
+// lowercase, non-alphanumeric characters replaced with underscores, and
+// prefixed so it can never collide with an unrelated table name.
+function tableNameForSheet(sheetName) {
+  const safe = String(sheetName || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 50);
+  return `sheet_backup_${safe || 'untitled'}`;
+}
+
+async function ensureTableForSheet(client, tableName) {
   await client.query(`
-    CREATE TABLE IF NOT EXISTS roster_backup (
-      id TEXT PRIMARY KEY,
-      name TEXT,
-      app_no TEXT,
-      reg_no TEXT,
-      machine_code TEXT,
-      site_code TEXT,
-      student_type TEXT,
-      status TEXT,
-      locked BOOLEAN,
-      verified_by TEXT,
-      verified_at TEXT,
-      first_verified_by TEXT,
-      first_verified_at TEXT,
-      notes TEXT,
-      photo_url TEXT,
-      backed_up_at TIMESTAMPTZ DEFAULT now()
-    )
-  `);
-  await client.query(`
-    CREATE TABLE IF NOT EXISTS hostel_backup (
-      id TEXT PRIMARY KEY,
-      student_name TEXT,
-      application_no TEXT,
-      registration_no TEXT,
-      machine_code TEXT,
-      hostel_name TEXT,
-      room_no TEXT,
-      status TEXT,
-      locked BOOLEAN,
-      verified_by TEXT,
-      verified_at TEXT,
-      first_verified_by TEXT,
-      first_verified_at TEXT,
-      notes TEXT,
-      photo_url TEXT,
+    CREATE TABLE IF NOT EXISTS ${tableName} (
+      row_index INTEGER PRIMARY KEY,
+      row_data JSONB,
       backed_up_at TIMESTAMPTZ DEFAULT now()
     )
   `);
 }
 
-async function insertBatch(client, tableName, columns, rows, mapRow) {
+async function insertRowsBatch(client, tableName, headers, rows) {
   const CHUNK_SIZE = 500;
   for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
     const chunk = rows.slice(i, i + CHUNK_SIZE);
     const values = [];
     const placeholders = chunk.map((row, idx) => {
-      const mapped = mapRow(row);
-      const base = idx * columns.length;
-      values.push(...mapped);
-      return '(' + mapped.map((_, j) => `$${base + j + 1}`).join(',') + ')';
+      const rowObj = {};
+      headers.forEach((h, colIdx) => { rowObj[h || `col_${colIdx}`] = row[colIdx] ?? ''; });
+      const base = idx * 2;
+      values.push(i + idx + 1, JSON.stringify(rowObj));
+      return `($${base + 1}, $${base + 2}::jsonb)`;
     }).join(',');
     await client.query(
-      `INSERT INTO ${tableName} (${columns.join(',')}) VALUES ${placeholders}`,
+      `INSERT INTO ${tableName} (row_index, row_data) VALUES ${placeholders}`,
       values
     );
   }
 }
 
-async function backupToNeon(rosterStudents, hostelStudents) {
+// sheetsData: array of { sheetName, headers, rows } - one entry per sheet
+// the person chose to back up. Returns per-sheet counts so the caller can
+// report exactly what was copied.
+async function backupSheetsToNeon(sheetsData) {
   const dbPool = getPool();
   if (!dbPool) {
     return { ok: false, error: 'Database backup is not configured yet. Add NEON_DATABASE_URL to enable this.' };
   }
 
   const client = await dbPool.connect();
+  const results = [];
   try {
-    await ensureTables(client);
     await client.query('BEGIN');
-
-    // Full snapshot replace - clear out the previous backup and insert the
-    // current state, rather than trying to reconcile row-by-row changes.
-    await client.query('TRUNCATE roster_backup');
-    if (rosterStudents.length) {
-      await insertBatch(
-        client, 'roster_backup',
-        ['id','name','app_no','reg_no','machine_code','site_code','student_type','status','locked','verified_by','verified_at','first_verified_by','first_verified_at','notes','photo_url'],
-        rosterStudents,
-        r => [r.id, r.name, r.appNo, r.regNo, r.machineCode, r.siteCode, r.studentType, r.status, !!r.locked, r.verifiedBy, r.verifiedAt, r.firstVerifiedBy, r.firstVerifiedAt, r.notes || '', r.photoUrl || '']
-      );
+    for (const sheet of sheetsData) {
+      const tableName = tableNameForSheet(sheet.sheetName);
+      await ensureTableForSheet(client, tableName);
+      await client.query(`TRUNCATE ${tableName}`);
+      if (sheet.rows.length) {
+        await insertRowsBatch(client, tableName, sheet.headers, sheet.rows);
+      }
+      results.push({ sheetName: sheet.sheetName, rowCount: sheet.rows.length });
     }
-
-    await client.query('TRUNCATE hostel_backup');
-    if (hostelStudents.length) {
-      await insertBatch(
-        client, 'hostel_backup',
-        ['id','student_name','application_no','registration_no','machine_code','hostel_name','room_no','status','locked','verified_by','verified_at','first_verified_by','first_verified_at','notes','photo_url'],
-        hostelStudents,
-        h => [h.id, h.studentName, h.applicationNo, h.registrationNo, h.machineCode, h.hostelName, h.roomNo, h.status, !!h.locked, h.verifiedBy, h.verifiedAt, h.firstVerifiedBy, h.firstVerifiedAt, h.notes || '', h.photoUrl || '']
-      );
-    }
-
     await client.query('COMMIT');
-    return { ok: true, rosterCount: rosterStudents.length, hostelCount: hostelStudents.length };
+    return { ok: true, results };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     return { ok: false, error: err.message };
@@ -122,4 +99,4 @@ async function backupToNeon(rosterStudents, hostelStudents) {
   }
 }
 
-module.exports = { backupToNeon };
+module.exports = { backupSheetsToNeon };
