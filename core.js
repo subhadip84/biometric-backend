@@ -2414,9 +2414,31 @@ async function deleteReportTemplate(id, actor) {
 // Lists every sheet/tab in the spreadsheet with its row count, so the
 // frontend can show a selection UI and a rough timeline estimate before
 // the person commits to running the backup.
+// Grid metadata's row count often reflects a pre-allocated sheet size
+// (Google Sheets commonly defaults new tabs to 1000 rows) rather than how
+// much data actually exists - so a completely empty sheet can still report
+// a large row count. To only offer sheets that genuinely have data, this
+// checks each sheet's real content (does it have anything beyond the
+// header row?) rather than trusting the metadata's row count on its own.
 async function getAvailableSheetsForBackup() {
   const metadata = await sheetsApi.getSheetMetadata();
-  return { ok: true, sheets: metadata };
+  const sheetsWithData = [];
+  for (const sheet of metadata) {
+    const sample = await sheetsApi.readRange(`${sheet.title}!A2:A2`);
+    const hasDataRow = sample.length > 0 && sample[0].some(cell => String(cell || '').trim());
+    if (hasDataRow) {
+      sheetsWithData.push(sheet);
+    } else {
+      // The A2 spot-check can miss data if column A itself happens to be
+      // blank on an otherwise populated row, so fall back to a fuller read
+      // before concluding the sheet is genuinely empty.
+      const fullCheck = await sheetsApi.readRange(`${sheet.title}!A2:ZZ2`);
+      if (fullCheck.length > 0 && fullCheck[0].some(cell => String(cell || '').trim())) {
+        sheetsWithData.push(sheet);
+      }
+    }
+  }
+  return { ok: true, sheets: sheetsWithData };
 }
 
 // Backs up whichever sheets the person selected. Reads each sheet's full
@@ -2428,15 +2450,24 @@ async function backupToNeonDatabase(sheetNames, actor) {
     return { ok: false, error: 'Select at least one sheet to back up.' };
   }
 
+  const masterSheetName = await sheetsApi.getMasterSheetName();
+  let studentRecordData = null;
   const sheetsData = [];
+
   for (const sheetName of sheetNames) {
+    if (sheetName === masterSheetName) {
+      const rosterResult = await getStudents();
+      if (!rosterResult.ok) return { ok: false, error: rosterResult.error || 'Could not read the roster.' };
+      studentRecordData = { sheetName, students: rosterResult.students };
+      continue;
+    }
     const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
     const headers = data[0] || [];
     const rows = data.slice(1);
     sheetsData.push({ sheetName, headers, rows });
   }
 
-  const result = await neonBackup.backupSheetsToNeon(sheetsData);
+  const result = await neonBackup.backupSheetsToNeon(sheetsData, studentRecordData);
   if (result.ok) {
     const summary = result.results.map(r => `${r.sheetName} (${r.rowCount})`).join(', ');
     await logActivity(actor || 'unknown', 'Backed Up to Database', summary);
