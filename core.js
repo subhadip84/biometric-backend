@@ -3,6 +3,7 @@
 
 const sheetsApi = require('./sheets');
 const { AsyncLocalStorage } = require('async_hooks');
+const neonBackup = require('./neonBackup');
 
 // Request-scoped context (currently just the client IP) so logActivity()
 // can record it without every function in the call chain needing to pass
@@ -2405,6 +2406,24 @@ async function deleteReportTemplate(id, actor) {
   return { ok: true };
 }
 
+// Copies the current roster and hostel data (as it stands right now in
+// Google Sheets, which remains the live, primary source) into a Neon
+// Postgres database as a secondary backup snapshot. This is a manual,
+// on-demand copy - not a live sync - so the backup reflects whatever the
+// sheets looked like at the moment this was last run.
+async function backupToNeonDatabase(actor) {
+  const rosterResult = await getStudents();
+  if (!rosterResult.ok) return { ok: false, error: rosterResult.error || 'Could not read the roster.' };
+  const hostelResult = await getHostelData();
+  if (!hostelResult.ok) return { ok: false, error: hostelResult.error || 'Could not read hostel data.' };
+
+  const result = await neonBackup.backupToNeon(rosterResult.students, hostelResult.students);
+  if (result.ok) {
+    await logActivity(actor || 'unknown', 'Backed Up to Database', `${result.rosterCount} roster + ${result.hostelCount} hostel record(s)`);
+  }
+  return result;
+}
+
 module.exports = {
   normalize, detectColumns, colToLetter, ensureExtraColumns,
   getAllUsers, writeAllUsers, effectivePermissions, capitalizeFirst, ALL_PERMISSION_KEYS,
@@ -2429,5 +2448,6 @@ module.exports = {
   requestContext,
   parseRosterFilterQuery, explainUnusualActivity, generateShiftHandoffNote, findDuplicateStudents, findDuplicateHostelStudents,
   getReportTemplates, saveReportTemplate, deleteReportTemplate,
-  bulkUpdateStatus, updateStudentNote, bulkUpdateHostelStatus, updateHostelStudentNote
+  bulkUpdateStatus, updateStudentNote, bulkUpdateHostelStatus, updateHostelStudentNote,
+  backupToNeonDatabase
 };
