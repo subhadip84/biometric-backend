@@ -50,6 +50,20 @@ async function getSheetTitles() {
   });
 }
 
+// Returns { title, rowCount } for every sheet/tab in the spreadsheet, using
+// only grid properties metadata - this is fast and doesn't read any actual
+// cell values, so it's safe to call just to populate a selection UI.
+async function getSheetMetadata() {
+  return withQuotaRetry(async () => {
+    const sheets = await getSheetsClient();
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+    return meta.data.sheets.map(s => ({
+      title: s.properties.title,
+      rowCount: (s.properties.gridProperties && s.properties.gridProperties.rowCount) || 0
+    }));
+  });
+}
+
 async function getMasterSheetName() {
   if (MASTER_SHEET_NAME) return MASTER_SHEET_NAME;
   const titles = await getSheetTitles();
@@ -251,6 +265,7 @@ async function deleteRow(sheetName, rowNumber1Indexed) {
 
 module.exports = {
   getMasterSheetName,
+  getSheetMetadata,
   ensureSheet,
   readRange,
   writeRange,
