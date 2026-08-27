@@ -38,11 +38,33 @@ function tableNameForSheet(sheetName) {
   return `sheet_backup_${safe || 'untitled'}`;
 }
 
-async function ensureTableForSheet(client, tableName) {
+// Turns a sheet's own header row into safe, unique, valid Postgres column
+// names - handles blank headers (falls back to a positional name) and
+// duplicate headers (appends _2, _3, etc. so they don't collide), and
+// guarantees the result never starts with a digit (Postgres requires
+// identifiers to start with a letter or underscore).
+function sanitizeColumnNames(headers) {
+  const seen = {};
+  return headers.map((h, i) => {
+    let base = String(h || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!base || /^[0-9]/.test(base)) base = `col_${i + 1}_${base}`.replace(/_+$/, '');
+    base = `f_${base}`;
+    if (seen[base] === undefined) {
+      seen[base] = 0;
+      return base;
+    }
+    seen[base]++;
+    return `${base}_${seen[base]}`;
+  });
+}
+
+async function ensureTableForSheet(client, tableName, columnNames) {
+  await client.query(`DROP TABLE IF EXISTS ${tableName}`);
+  const columnDefs = columnNames.map(c => `${c} TEXT`).join(', ');
   await client.query(`
-    CREATE TABLE IF NOT EXISTS ${tableName} (
+    CREATE TABLE ${tableName} (
       row_index INTEGER PRIMARY KEY,
-      row_data JSONB,
+      ${columnDefs},
       backed_up_at TIMESTAMPTZ DEFAULT now()
     )
   `);
@@ -75,6 +97,76 @@ function findColumnIndex(headers, targetName){
   const normalize = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const target = normalize(targetName);
   return headers.findIndex(h => normalize(h) === target);
+}
+
+// The main roster also gets a proper table with real columns, same
+// reasoning as User Accounts - this is core data people want to browse
+// and query directly, not unwrap from JSON every time. Takes already-clean
+// student objects (as getStudents() returns them) rather than raw sheet
+// rows, since the app's own fuzzy header-matching logic (which handles
+// things like "App No" vs "Application Number" vs "Roll No" all meaning
+// the same field) already lives in core.js - reusing it here avoids a
+// second, separate implementation of that same matching logic drifting
+// out of sync with the real one.
+async function ensureStudentRecordTable(client) {
+  await client.query(`DROP TABLE IF EXISTS sheet_backup_student_record`);
+  await client.query(`
+    CREATE TABLE sheet_backup_student_record (
+      id TEXT PRIMARY KEY,
+      name TEXT,
+      app_no TEXT,
+      reg_no TEXT,
+      machine_code TEXT,
+      site_code TEXT,
+      student_type TEXT,
+      status TEXT,
+      locked BOOLEAN,
+      verified_by TEXT,
+      verified_at TEXT,
+      first_verified_by TEXT,
+      first_verified_at TEXT,
+      notes TEXT,
+      photo_url TEXT,
+      backed_up_at TIMESTAMPTZ DEFAULT now()
+    )
+  `);
+}
+
+async function backupStudentRecord(client, students) {
+  await ensureStudentRecordTable(client);
+  if (!students.length) return 0;
+
+  const CHUNK_SIZE = 500;
+  let inserted = 0;
+  for (let i = 0; i < students.length; i += CHUNK_SIZE) {
+    const chunk = students.slice(i, i + CHUNK_SIZE);
+    const values = [];
+    const placeholders = chunk.map((s, idx) => {
+      const base = idx * 15;
+      values.push(
+        s.id, s.name || '', s.appNo || '', s.regNo || '', s.machineCode || '',
+        s.siteCode || '', s.studentType || '', s.status || '', !!s.locked,
+        s.verifiedBy || '', s.verifiedAt || '', s.firstVerifiedBy || '',
+        s.firstVerifiedAt || '', s.notes || '', s.photoUrl || ''
+      );
+      return `($${base+1},$${base+2},$${base+3},$${base+4},$${base+5},$${base+6},$${base+7},$${base+8},$${base+9},$${base+10},$${base+11},$${base+12},$${base+13},$${base+14},$${base+15})`;
+    }).join(',');
+    await client.query(
+      `INSERT INTO sheet_backup_student_record
+        (id, name, app_no, reg_no, machine_code, site_code, student_type, status, locked, verified_by, verified_at, first_verified_by, first_verified_at, notes, photo_url)
+       VALUES ${placeholders}
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name, app_no = EXCLUDED.app_no, reg_no = EXCLUDED.reg_no,
+         machine_code = EXCLUDED.machine_code, site_code = EXCLUDED.site_code, student_type = EXCLUDED.student_type,
+         status = EXCLUDED.status, locked = EXCLUDED.locked, verified_by = EXCLUDED.verified_by,
+         verified_at = EXCLUDED.verified_at, first_verified_by = EXCLUDED.first_verified_by,
+         first_verified_at = EXCLUDED.first_verified_at, notes = EXCLUDED.notes, photo_url = EXCLUDED.photo_url,
+         backed_up_at = now()`,
+      values
+    );
+    inserted += chunk.length;
+  }
+  return inserted;
 }
 
 async function backupUserAccounts(client, headers, rows) {
@@ -136,27 +228,24 @@ async function backupUserAccounts(client, headers, rows) {
   return inserted;
 }
 
-async function insertRowsBatch(client, tableName, headers, rows) {
+async function insertRowsBatch(client, tableName, columnNames, rows) {
   const CHUNK_SIZE = 500;
+  const colCount = columnNames.length;
   for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
     const chunk = rows.slice(i, i + CHUNK_SIZE);
     const values = [];
     const placeholders = chunk.map((row, idx) => {
-      const rowObj = {};
-      // Iterate over whichever is longer - headers or the row itself - so a
-      // row with more populated cells than there are header columns still
-      // has every one of its values captured, not silently dropped.
-      const colCount = Math.max(headers.length, row.length);
-      for (let colIdx = 0; colIdx < colCount; colIdx++) {
-        const key = headers[colIdx] || `col_${colIdx}`;
-        rowObj[key] = row[colIdx] ?? '';
+      const base = idx * (colCount + 1);
+      values.push(i + idx + 1);
+      for (let c = 0; c < colCount; c++) {
+        values.push(row[c] ?? '');
       }
-      const base = idx * 2;
-      values.push(i + idx + 1, JSON.stringify(rowObj));
-      return `($${base + 1}, $${base + 2}::jsonb)`;
+      const placeholderNums = [];
+      for (let c = 0; c <= colCount; c++) placeholderNums.push(`$${base + c + 1}`);
+      return `(${placeholderNums.join(',')})`;
     }).join(',');
     await client.query(
-      `INSERT INTO ${tableName} (row_index, row_data) VALUES ${placeholders}`,
+      `INSERT INTO ${tableName} (row_index, ${columnNames.join(',')}) VALUES ${placeholders}`,
       values
     );
   }
@@ -165,7 +254,7 @@ async function insertRowsBatch(client, tableName, headers, rows) {
 // sheetsData: array of { sheetName, headers, rows } - one entry per sheet
 // the person chose to back up. Returns per-sheet counts so the caller can
 // report exactly what was copied.
-async function backupSheetsToNeon(sheetsData) {
+async function backupSheetsToNeon(sheetsData, studentRecordData) {
   const dbPool = getPool();
   if (!dbPool) {
     return { ok: false, error: 'Database backup is not configured yet. Add NEON_DATABASE_URL to enable this.' };
@@ -175,6 +264,12 @@ async function backupSheetsToNeon(sheetsData) {
   const results = [];
   try {
     await client.query('BEGIN');
+
+    if (studentRecordData) {
+      const count = await backupStudentRecord(client, studentRecordData.students);
+      results.push({ sheetName: studentRecordData.sheetName, rowCount: count });
+    }
+
     for (const sheet of sheetsData) {
       const isUserAccounts = String(sheet.sheetName || '').trim().toLowerCase() === 'user accounts';
       if (isUserAccounts) {
@@ -183,10 +278,10 @@ async function backupSheetsToNeon(sheetsData) {
         continue;
       }
       const tableName = tableNameForSheet(sheet.sheetName);
-      await ensureTableForSheet(client, tableName);
-      await client.query(`TRUNCATE ${tableName}`);
+      const columnNames = sanitizeColumnNames(sheet.headers);
+      await ensureTableForSheet(client, tableName, columnNames);
       if (sheet.rows.length) {
-        await insertRowsBatch(client, tableName, sheet.headers, sheet.rows);
+        await insertRowsBatch(client, tableName, columnNames, sheet.rows);
       }
       results.push({ sheetName: sheet.sheetName, rowCount: sheet.rows.length });
     }
