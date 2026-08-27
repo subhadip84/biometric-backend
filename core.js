@@ -2411,15 +2411,35 @@ async function deleteReportTemplate(id, actor) {
 // Postgres database as a secondary backup snapshot. This is a manual,
 // on-demand copy - not a live sync - so the backup reflects whatever the
 // sheets looked like at the moment this was last run.
-async function backupToNeonDatabase(actor) {
-  const rosterResult = await getStudents();
-  if (!rosterResult.ok) return { ok: false, error: rosterResult.error || 'Could not read the roster.' };
-  const hostelResult = await getHostelData();
-  if (!hostelResult.ok) return { ok: false, error: hostelResult.error || 'Could not read hostel data.' };
+// Lists every sheet/tab in the spreadsheet with its row count, so the
+// frontend can show a selection UI and a rough timeline estimate before
+// the person commits to running the backup.
+async function getAvailableSheetsForBackup() {
+  const metadata = await sheetsApi.getSheetMetadata();
+  return { ok: true, sheets: metadata };
+}
 
-  const result = await neonBackup.backupToNeon(rosterResult.students, hostelResult.students);
+// Backs up whichever sheets the person selected. Reads each sheet's full
+// current data directly (not through getStudents/getHostelData, since
+// those are specific to the roster/hostel shape - this needs to work for
+// any sheet, with whatever columns it happens to have).
+async function backupToNeonDatabase(sheetNames, actor) {
+  if (!Array.isArray(sheetNames) || !sheetNames.length) {
+    return { ok: false, error: 'Select at least one sheet to back up.' };
+  }
+
+  const sheetsData = [];
+  for (const sheetName of sheetNames) {
+    const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+    const headers = data[0] || [];
+    const rows = data.slice(1);
+    sheetsData.push({ sheetName, headers, rows });
+  }
+
+  const result = await neonBackup.backupSheetsToNeon(sheetsData);
   if (result.ok) {
-    await logActivity(actor || 'unknown', 'Backed Up to Database', `${result.rosterCount} roster + ${result.hostelCount} hostel record(s)`);
+    const summary = result.results.map(r => `${r.sheetName} (${r.rowCount})`).join(', ');
+    await logActivity(actor || 'unknown', 'Backed Up to Database', summary);
   }
   return result;
 }
@@ -2449,5 +2469,5 @@ module.exports = {
   parseRosterFilterQuery, explainUnusualActivity, generateShiftHandoffNote, findDuplicateStudents, findDuplicateHostelStudents,
   getReportTemplates, saveReportTemplate, deleteReportTemplate,
   bulkUpdateStatus, updateStudentNote, bulkUpdateHostelStatus, updateHostelStudentNote,
-  backupToNeonDatabase
+  backupToNeonDatabase, getAvailableSheetsForBackup
 };
