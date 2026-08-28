@@ -63,6 +63,24 @@ function normalize(s) {
   return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+// Derives an academic year label (e.g. "2026-27") from a registration
+// number like "AU/2026/0000264". Looks for a 4-digit year between slashes
+// first (the expected format), and falls back to any standalone 4-digit
+// number starting with 19 or 20 found anywhere in the string, so slightly
+// different registration number formats still resolve correctly. Returns
+// null if no plausible year can be found at all.
+function deriveAcademicYear(regNo) {
+  const str = String(regNo || '').trim();
+  if (!str) return null;
+  let match = str.match(/\/(\d{4})\//);
+  if (!match) match = str.match(/\b(19|20)\d{2}\b/);
+  if (!match) return null;
+  const year = parseInt(match[0].replace(/\D/g, '').slice(0, 4), 10);
+  if (!year || year < 1900 || year > 2100) return null;
+  const nextYearShort = String(year + 1).slice(-2);
+  return `${year}-${nextYearShort}`;
+}
+
 function detectColumns(headers) {
   const col = {};
   Object.keys(HEADER_CANDIDATES).forEach(field => {
@@ -121,6 +139,12 @@ function detectColumns(headers) {
   }
   col.photoUrl = photoUrlCol;
 
+  let academicYearCol = -1;
+  for (let i = 0; i < headers.length; i++) {
+    if (normalize(headers[i]) === 'academicyear') { academicYearCol = i; break; }
+  }
+  col.academicYear = academicYearCol;
+
   return col;
 }
 
@@ -146,6 +170,7 @@ async function ensureExtraColumns(sheetName, headers, col) {
   if (col.firstVerifiedAt === -1) { col.firstVerifiedAt = headers.length + additions.length; additions.push('First Verified At'); changed = true; }
   if (col.notes === -1) { col.notes = headers.length + additions.length; additions.push('Notes'); changed = true; }
   if (col.photoUrl === -1) { col.photoUrl = headers.length + additions.length; additions.push('Photo URL'); changed = true; }
+  if (col.academicYear === -1) { col.academicYear = headers.length + additions.length; additions.push('Academic Year'); changed = true; }
 
   if (changed) {
     const startCol = colToLetter(headers.length);
@@ -472,6 +497,8 @@ async function getStudents() {
   }
 
   const students = [];
+  const academicYearColumn = [];
+  let academicYearNeedsBackfill = false;
   for (let r = 1; r < data.length; r++) {
     const row = data[r];
     const name = col.name > -1 ? row[col.name] : '';
@@ -495,6 +522,10 @@ async function getStudents() {
     const firstVerifiedAtVal = col.firstVerifiedAt > -1 ? (row[col.firstVerifiedAt] || '') : '';
     const notesVal = col.notes > -1 ? (row[col.notes] || '') : '';
     const photoUrlVal = col.photoUrl > -1 ? (row[col.photoUrl] || '') : '';
+    const storedAcademicYear = col.academicYear > -1 ? String(row[col.academicYear] || '').trim() : '';
+    const academicYearVal = storedAcademicYear || deriveAcademicYear(regNo) || '';
+    if (!storedAcademicYear && academicYearVal) academicYearNeedsBackfill = true;
+    academicYearColumn.push([academicYearVal]);
 
     students.push({
       id: 'row' + (r + 1),
@@ -514,8 +545,14 @@ async function getStudents() {
       firstVerifiedAt: String(firstVerifiedAtVal),
       firstVerifiedByIsAdmin: isAdminLabel(String(firstVerifiedByVal)),
       notes: String(notesVal),
-      photoUrl: String(photoUrlVal)
+      photoUrl: String(photoUrlVal),
+      academicYear: academicYearVal
     });
+  }
+
+  if (academicYearNeedsBackfill && col.academicYear > -1 && academicYearColumn.length) {
+    const startCol = colToLetter(col.academicYear);
+    await sheetsApi.writeRange(`${sheetName}!${startCol}2:${startCol}${academicYearColumn.length + 1}`, academicYearColumn);
   }
 
   return { ok: true, students, file: sheetName };
@@ -1610,6 +1647,7 @@ function detectHostelColumns(headers) {
   col.firstVerifiedAt = firstVerifiedAtCol;
   if (col.notes === undefined) col.notes = -1;
   if (col.photoUrl === undefined) col.photoUrl = (col['photourl'] !== undefined ? col['photourl'] : (col['photo'] !== undefined ? col['photo'] : -1));
+  if (col.academicYear === undefined) col.academicYear = (col['academicyear'] !== undefined ? col['academicyear'] : -1);
   return col;
 }
 
@@ -1623,6 +1661,7 @@ async function ensureHostelExtraColumns(headers, col) {
   if (col.firstVerifiedAt === -1) { col.firstVerifiedAt = headers.length + additions.length; additions.push('First Verified At'); }
   if (col.notes === -1) { col.notes = headers.length + additions.length; additions.push('Notes'); }
   if (col.photoUrl === -1) { col.photoUrl = headers.length + additions.length; additions.push('Photo URL'); }
+  if (col.academicYear === -1) { col.academicYear = headers.length + additions.length; additions.push('Academic Year'); }
   if (additions.length) {
     await sheetsApi.writeRange(`${HOSTEL_SHEET_NAME}!${colToLetter(headers.length)}1`, [additions]);
   }
@@ -1639,6 +1678,8 @@ async function getHostelData() {
   col = await ensureHostelExtraColumns(headers, col);
 
   const students = [];
+  const academicYearColumn = [];
+  let academicYearNeedsBackfill = false;
   for (let r = 1; r < data.length; r++) {
     const row = data[r];
     const studentName = row[col['studentname']] || '';
@@ -1649,6 +1690,10 @@ async function getHostelData() {
     const statusVal = String(row[col.status] || '').trim().toLowerCase();
     const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true');
     const isLocked = String(row[col.lock] || '').trim().toLowerCase() === 'yes';
+    const storedAcademicYear = col.academicYear > -1 ? String(row[col.academicYear] || '').trim() : '';
+    const academicYearVal = storedAcademicYear || deriveAcademicYear(regNo) || '';
+    if (!storedAcademicYear && academicYearVal) academicYearNeedsBackfill = true;
+    academicYearColumn.push([academicYearVal]);
 
     students.push({
       id: 'hrow' + (r + 1),
@@ -1670,9 +1715,16 @@ async function getHostelData() {
       firstVerifiedBy: String(row[col.firstVerifiedBy] || ''),
       firstVerifiedAt: String(row[col.firstVerifiedAt] || ''),
       notes: String(row[col.notes] || ''),
-      photoUrl: String(row[col.photoUrl] || '')
+      photoUrl: String(row[col.photoUrl] || ''),
+      academicYear: academicYearVal
     });
   }
+
+  if (academicYearNeedsBackfill && col.academicYear > -1 && academicYearColumn.length) {
+    const startCol = colToLetter(col.academicYear);
+    await sheetsApi.writeRange(`${HOSTEL_SHEET_NAME}!${startCol}2:${startCol}${academicYearColumn.length + 1}`, academicYearColumn);
+  }
+
   return { ok: true, students };
 }
 
