@@ -2516,24 +2516,15 @@ async function backupToNeonDatabase(sheetNames, actor) {
     return { ok: false, error: 'Select at least one sheet to back up.' };
   }
 
-  const masterSheetName = await sheetsApi.getMasterSheetName();
-  let studentRecordData = null;
   const sheetsData = [];
-
   for (const sheetName of sheetNames) {
-    if (sheetName === masterSheetName) {
-      const rosterResult = await getStudents();
-      if (!rosterResult.ok) return { ok: false, error: rosterResult.error || 'Could not read the roster.' };
-      studentRecordData = { sheetName, students: rosterResult.students };
-      continue;
-    }
     const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
     const headers = data[0] || [];
     const rows = data.slice(1);
     sheetsData.push({ sheetName, headers, rows });
   }
 
-  const result = await neonBackup.backupSheetsToNeon(sheetsData, studentRecordData);
+  const result = await neonBackup.backupSheetsToNeon(sheetsData);
   if (result.ok) {
     const summary = result.results.map(r => `${r.sheetName} (${r.rowCount})`).join(', ');
     await logActivity(actor || 'unknown', 'Backed Up to Database', summary);
