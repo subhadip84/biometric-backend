@@ -1921,7 +1921,7 @@ async function deleteHostelStudent(rowId, adminPassword, actor, actorUserId) {
   return { ok: true };
 }
 
-async function exportHostelAsCsv(statusFilter) {
+async function exportHostelAsCsv(statusFilter, academicYearFilter) {
   const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
   if (!data.length) return { ok: false, error: 'Hostel data is empty.' };
   const headers = data[0];
@@ -1935,6 +1935,7 @@ async function exportHostelAsCsv(statusFilter) {
   }
 
   const wantStatus = statusFilter && statusFilter !== 'all' ? statusFilter : null;
+  const wantAcademicYear = academicYearFilter && academicYearFilter !== 'all' ? academicYearFilter : null;
   const rows = [serialColIndex > -1 ? headers : ['Sl. No.', ...headers]];
   let serialCounter = 1;
   for (let r = 1; r < data.length; r++) {
@@ -1944,6 +1945,12 @@ async function exportHostelAsCsv(statusFilter) {
       const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true');
       if (wantStatus === 'done' && !isDone) continue;
       if (wantStatus === 'pending' && isDone) continue;
+    }
+    if (wantAcademicYear) {
+      const regNoVal = col['registrationno'] > -1 ? row[col['registrationno']] : '';
+      const storedYear = col.academicYear > -1 ? String(row[col.academicYear] || '').trim() : '';
+      const rowYear = storedYear || deriveAcademicYear(regNoVal) || '';
+      if (rowYear !== wantAcademicYear) continue;
     }
     if (serialColIndex > -1) {
       row = row.slice();
