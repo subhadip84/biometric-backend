@@ -1497,13 +1497,14 @@ function csvEscape(val) {
     : str;
 }
 
-async function exportRosterAsCsv(statusFilter, siteFilter) {
+async function exportRosterAsCsv(statusFilter, siteFilter, academicYearFilter) {
   const sheetName = await sheetsApi.getMasterSheetName();
   const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
   const headers = data[0];
   const col = detectColumns(headers);
   const wantStatus = statusFilter && statusFilter !== 'all' ? statusFilter : null;
   const wantSite = siteFilter && siteFilter !== 'all' ? String(siteFilter).trim().toLowerCase() : null;
+  const wantAcademicYear = academicYearFilter && academicYearFilter !== 'all' ? academicYearFilter : null;
 
   let serialColIndex = -1;
   for (let h = 0; h < headers.length; h++) {
@@ -1524,6 +1525,12 @@ async function exportRosterAsCsv(statusFilter, siteFilter) {
     if (wantSite) {
       const siteVal = col.siteCode > -1 ? String(row[col.siteCode] || '').trim().toLowerCase() : '';
       if (siteVal !== wantSite) continue;
+    }
+    if (wantAcademicYear) {
+      const regNoVal = col.regNo > -1 ? row[col.regNo] : '';
+      const storedYear = col.academicYear > -1 ? String(row[col.academicYear] || '').trim() : '';
+      const rowYear = storedYear || deriveAcademicYear(regNoVal) || '';
+      if (rowYear !== wantAcademicYear) continue;
     }
     if (serialColIndex > -1) {
       row = row.slice();
