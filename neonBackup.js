@@ -127,6 +127,7 @@ async function ensureStudentRecordTable(client) {
       first_verified_at TEXT,
       notes TEXT,
       photo_url TEXT,
+      academic_year TEXT,
       backed_up_at TIMESTAMPTZ DEFAULT now()
     )
   `);
@@ -142,18 +143,18 @@ async function backupStudentRecord(client, students) {
     const chunk = students.slice(i, i + CHUNK_SIZE);
     const values = [];
     const placeholders = chunk.map((s, idx) => {
-      const base = idx * 15;
+      const base = idx * 16;
       values.push(
         s.id, s.name || '', s.appNo || '', s.regNo || '', s.machineCode || '',
         s.siteCode || '', s.studentType || '', s.status || '', !!s.locked,
         s.verifiedBy || '', s.verifiedAt || '', s.firstVerifiedBy || '',
-        s.firstVerifiedAt || '', s.notes || '', s.photoUrl || ''
+        s.firstVerifiedAt || '', s.notes || '', s.photoUrl || '', s.academicYear || ''
       );
-      return `($${base+1},$${base+2},$${base+3},$${base+4},$${base+5},$${base+6},$${base+7},$${base+8},$${base+9},$${base+10},$${base+11},$${base+12},$${base+13},$${base+14},$${base+15})`;
+      return `($${base+1},$${base+2},$${base+3},$${base+4},$${base+5},$${base+6},$${base+7},$${base+8},$${base+9},$${base+10},$${base+11},$${base+12},$${base+13},$${base+14},$${base+15},$${base+16})`;
     }).join(',');
     await client.query(
       `INSERT INTO sheet_backup_student_record
-        (id, name, app_no, reg_no, machine_code, site_code, student_type, status, locked, verified_by, verified_at, first_verified_by, first_verified_at, notes, photo_url)
+        (id, name, app_no, reg_no, machine_code, site_code, student_type, status, locked, verified_by, verified_at, first_verified_by, first_verified_at, notes, photo_url, academic_year)
        VALUES ${placeholders}
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name, app_no = EXCLUDED.app_no, reg_no = EXCLUDED.reg_no,
@@ -161,7 +162,7 @@ async function backupStudentRecord(client, students) {
          status = EXCLUDED.status, locked = EXCLUDED.locked, verified_by = EXCLUDED.verified_by,
          verified_at = EXCLUDED.verified_at, first_verified_by = EXCLUDED.first_verified_by,
          first_verified_at = EXCLUDED.first_verified_at, notes = EXCLUDED.notes, photo_url = EXCLUDED.photo_url,
-         backed_up_at = now()`,
+         academic_year = EXCLUDED.academic_year, backed_up_at = now()`,
       values
     );
     inserted += chunk.length;
