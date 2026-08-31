@@ -1018,22 +1018,77 @@ function detectImportColumns(headers) {
   return detectColumns(headers);
 }
 
+// A handful of general-purpose plausibility checks, reused across every
+// column below. These aren't exact format validators - they catch the
+// obvious signature of a value that clearly belongs in a different
+// column (something shaped like a registration number, purely numeric
+// where text is expected, or entirely missing digits where a number is
+// expected).
+function looksLikeARegNoPattern(val) {
+  return /\/(19|20)\d{2}\//.test(val);
+}
+function isPurelyNumeric(val) {
+  return /^\d+$/.test(val);
+}
+function hasNoDigitsAtAll(val) {
+  return val.length > 0 && !/\d/.test(val);
+}
+
+// Validates every column in the uploaded file against a per-column set of
+// plausibility rules - not just Name/App No/Reg No. Returns a blocking
+// list of issues (not just a warning): if issues.length > 0, the import
+// should be prevented until the source file is corrected and re-uploaded.
 async function validateImportRows(uploadedHeaders, uploadedRows) {
   const col = detectImportColumns(uploadedHeaders);
   let missingBothCount = 0, missingNameCount = 0;
-  uploadedRows.forEach(row => {
+  const issues = [];
+  const ISSUE_SAMPLE_LIMIT = 8;
+
+  // label, column index, rule function, human explanation of what's wrong
+  const columnRules = [
+    { label: 'Site Code', idx: col.siteCode, rule: looksLikeARegNoPattern, reason: 'looks like a registration number, not a site code' },
+    { label: 'Student Name', idx: col.name, rule: isPurelyNumeric, reason: 'is purely numeric, not a name' },
+    { label: 'Student Name', idx: col.name, rule: looksLikeARegNoPattern, reason: 'looks like a registration number, not a name' },
+    { label: 'Application No', idx: col.appNo, rule: hasNoDigitsAtAll, reason: 'contains no digits at all, not a valid application number' },
+    { label: 'Registration Number', idx: col.regNo, rule: hasNoDigitsAtAll, reason: 'contains no digits at all, not a valid registration number' },
+    { label: 'Machine Code', idx: col.machineCode, rule: looksLikeARegNoPattern, reason: 'looks like a registration number, not a machine code' },
+    { label: 'Student Type', idx: col.studentType, rule: isPurelyNumeric, reason: 'is purely numeric, not a student type' },
+    { label: 'Student Type', idx: col.studentType, rule: looksLikeARegNoPattern, reason: 'looks like a registration number, not a student type' },
+    { label: 'Fingerprint Registration / Status', idx: col.status, rule: looksLikeARegNoPattern, reason: 'looks like a registration number, not a status value' }
+  ];
+
+  const issueCounts = {}; // caps samples per (label+reason) combination
+
+  uploadedRows.forEach((row, idx) => {
     const appNo = col.appNo > -1 ? String(row[col.appNo] || '').trim() : '';
     const regNo = col.regNo > -1 ? String(row[col.regNo] || '').trim() : '';
     const name = col.name > -1 ? String(row[col.name] || '').trim() : '';
     if (!appNo && !regNo) missingBothCount++;
     if (!name) missingNameCount++;
+
+    columnRules.forEach(({ label, idx: colIdx, rule, reason }) => {
+      if (colIdx === -1 || colIdx === undefined) return;
+      const value = String(row[colIdx] || '').trim();
+      if (!value) return;
+      if (rule(value)) {
+        const key = label + '|' + reason;
+        issueCounts[key] = (issueCounts[key] || 0);
+        if (issueCounts[key] < ISSUE_SAMPLE_LIMIT) {
+          issues.push({ row: idx + 2, column: label, value, reason });
+          issueCounts[key]++;
+        }
+      }
+    });
   });
+
   return {
     ok: true,
     detectedName: col.name > -1 ? uploadedHeaders[col.name] : null,
     detectedAppNo: col.appNo > -1 ? uploadedHeaders[col.appNo] : null,
     detectedRegNo: col.regNo > -1 ? uploadedHeaders[col.regNo] : null,
-    missingBothCount, missingNameCount
+    missingBothCount, missingNameCount,
+    issues,
+    blocked: issues.length > 0
   };
 }
 
