@@ -2650,6 +2650,116 @@ async function backupToNeonDatabase(sheetNames, actor) {
   return result;
 }
 
+// Finds records that are marked verified but whose Locked cell isn't
+// actually "Yes" (blank, "No", or anything else) - an inconsistent state
+// that should never occur through normal app usage, since every path that
+// marks a record verified also locks it in the same operation. When this
+// does happen, it's most likely a direct edit to the sheet outside the
+// app (which the Activity Log has no visibility into).
+async function findInconsistentLockStatus() {
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectColumns(headers);
+  col = await ensureExtraColumns(sheetName, headers, col);
+
+  const inconsistent = [];
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    const statusVal = String(row[col.status] || '').trim().toLowerCase();
+    const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true' || statusVal === 'completed' || statusVal === 'verified');
+    const isLocked = String(row[col.lock] || '').trim().toLowerCase() === 'yes';
+    if (isDone && !isLocked) {
+      inconsistent.push({
+        id: 'row' + (r + 1),
+        name: col.name > -1 ? String(row[col.name] || '') : '',
+        regNo: col.regNo > -1 ? String(row[col.regNo] || '') : '',
+        appNo: col.appNo > -1 ? String(row[col.appNo] || '') : ''
+      });
+    }
+  }
+  return { ok: true, records: inconsistent };
+}
+
+async function fixInconsistentLockStatus(rowIds, password, actor) {
+  const adminPassword = await getAdminPassword();
+  if (password !== adminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  if (!Array.isArray(rowIds) || !rowIds.length) return { ok: false, error: 'No records selected.' };
+
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectColumns(headers);
+  col = await ensureExtraColumns(sheetName, headers, col);
+
+  const updates = [];
+  const fixedNames = [];
+  rowIds.forEach(rowId => {
+    const rowNum = parseInt(String(rowId).replace('row', ''), 10);
+    if (!rowNum || rowNum < 2) return;
+    updates.push({ range: `${sheetName}!${colToLetter(col.lock)}${rowNum}`, values: [['Yes']] });
+    const row = data[rowNum - 1] || [];
+    const name = col.name > -1 ? String(row[col.name] || '') : '';
+    if (name) fixedNames.push(name);
+  });
+
+  if (updates.length) await sheetsApi.batchWriteRanges(updates);
+  const summary = fixedNames.slice(0, 5).join(', ') + (fixedNames.length > 5 ? ` and ${fixedNames.length - 5} more` : '');
+  await logActivity(actor || 'Admin', 'Fixed Data Inconsistency', `Re-locked ${updates.length} verified record(s): ${summary}`);
+  return { ok: true, fixedCount: updates.length };
+}
+
+async function findInconsistentHostelLockStatus() {
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const inconsistent = [];
+  for (let r = 1; r < data.length; r++) {
+    const row = data[r];
+    const statusVal = String(row[col.status] || '').trim().toLowerCase();
+    const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true');
+    const isLocked = String(row[col.lock] || '').trim().toLowerCase() === 'yes';
+    if (isDone && !isLocked) {
+      inconsistent.push({
+        id: 'hrow' + (r + 1),
+        name: col['studentname'] > -1 ? String(row[col['studentname']] || '') : '',
+        regNo: col['registrationno'] > -1 ? String(row[col['registrationno']] || '') : '',
+        appNo: col['applicationno'] > -1 ? String(row[col['applicationno']] || '') : ''
+      });
+    }
+  }
+  return { ok: true, records: inconsistent };
+}
+
+async function fixInconsistentHostelLockStatus(rowIds, password, actor) {
+  const adminPassword = await getAdminPassword();
+  if (password !== adminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  if (!Array.isArray(rowIds) || !rowIds.length) return { ok: false, error: 'No records selected.' };
+
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const updates = [];
+  const fixedNames = [];
+  rowIds.forEach(rowId => {
+    const rowNum = parseInt(String(rowId).replace('hrow', ''), 10);
+    if (!rowNum || rowNum < 2) return;
+    updates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.lock)}${rowNum}`, values: [['Yes']] });
+    const row = data[rowNum - 1] || [];
+    const name = col['studentname'] > -1 ? String(row[col['studentname']] || '') : '';
+    if (name) fixedNames.push(name);
+  });
+
+  if (updates.length) await sheetsApi.batchWriteRanges(updates);
+  const summary = fixedNames.slice(0, 5).join(', ') + (fixedNames.length > 5 ? ` and ${fixedNames.length - 5} more` : '');
+  await logActivity(actor || 'Admin', 'Fixed Hostel Data Inconsistency', `Re-locked ${updates.length} verified record(s): ${summary}`);
+  return { ok: true, fixedCount: updates.length };
+}
+
 module.exports = {
   normalize, detectColumns, colToLetter, ensureExtraColumns,
   getAllUsers, writeAllUsers, effectivePermissions, capitalizeFirst, ALL_PERMISSION_KEYS,
@@ -2676,5 +2786,7 @@ module.exports = {
   getReportTemplates, saveReportTemplate, deleteReportTemplate,
   bulkUpdateStatus, updateStudentNote, bulkUpdateHostelStatus, updateHostelStudentNote,
   backupToNeonDatabase, getAvailableSheetsForBackup,
-  getStudentAuditTrail
+  getStudentAuditTrail,
+  findInconsistentLockStatus, fixInconsistentLockStatus,
+  findInconsistentHostelLockStatus, fixInconsistentHostelLockStatus
 };
