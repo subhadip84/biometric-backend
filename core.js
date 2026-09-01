@@ -351,14 +351,35 @@ async function getActivityLog(limit) {
 // includes "(row N)" in its details, consistently across both the main
 // roster and hostel - reusing that instead of duplicating storage.
 async function getStudentAuditTrail(rowId) {
-  const rowNum = parseInt(String(rowId).replace(/^h?row/, ''), 10);
+  const idStr = String(rowId);
+  const isHostelContext = /^h/i.test(idStr);
+  const rowNum = parseInt(idStr.replace(/^h?row/, ''), 10);
   if (!rowNum) return { ok: false, error: 'Invalid student id.' };
 
   await sheetsApi.ensureSheet(sheetsApi.ACTIVITY_LOG_SHEET_NAME, ['Timestamp', 'Actor', 'Action', 'Details', 'IP']);
-  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:E`);
+  // Row numbers are independent per sheet, so "row 608" could mean the
+  // main roster's row 608 or the hostel sheet's row 608 - the action name
+  // itself is what actually distinguishes which one a log entry belongs
+  // to, since every hostel-related action consistently includes the word
+  // "Hostel" and no main-roster action ever does.
+  // Only requests the most recent ~5000 rows from the API directly
+  // (rather than reading the entire, ever-growing log and discarding most
+  // of it afterward), using the sheet's own row count to build a targeted
+  // range - recent activity is what a timeline actually needs.
+  const RECENT_LOG_WINDOW = 5000;
+  const metadata = await sheetsApi.getSheetMetadata();
+  const logMeta = metadata.find(m => m.title === sheetsApi.ACTIVITY_LOG_SHEET_NAME);
+  const totalRows = (logMeta && logMeta.rowCount) || 0;
+  const startRow = totalRows > RECENT_LOG_WINDOW ? Math.max(2, totalRows - RECENT_LOG_WINDOW) : 2;
+  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A${startRow}:E`);
   const marker = `(row ${rowNum})`;
   const matches = rows
-    .filter(r => String(r[3] || '').includes(marker))
+    .filter(r => {
+      const details = String(r[3] || '');
+      if (!details.includes(marker)) return false;
+      const actionIsHostel = /hostel/i.test(String(r[2] || ''));
+      return actionIsHostel === isHostelContext;
+    })
     .map(r => ({ timestamp: r[0] || '', actor: r[1] || '', action: r[2] || '', details: r[3] || '' }))
     .reverse();
 
