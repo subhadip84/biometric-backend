@@ -85,6 +85,7 @@ const API_FUNCTIONS = {
   deleteReportTemplate: core.deleteReportTemplate,
   backupToNeonDatabase: core.backupToNeonDatabase,
   getAvailableSheetsForBackup: core.getAvailableSheetsForBackup,
+  getStudentAuditTrail: core.getStudentAuditTrail,
   bulkUpdateStatus: core.bulkUpdateStatus,
   updateStudentNote: core.updateStudentNote,
   bulkUpdateHostelStatus: core.bulkUpdateHostelStatus,
