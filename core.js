@@ -439,18 +439,61 @@ function parseTimestampLoose(raw) {
 
 // ---------- Core roster functions ----------
 
+// In-memory rate limiting for failed login attempts, keyed by User ID.
+// Resets on server restart (an accepted trade-off for a lightweight
+// limiter that needs no extra sheet writes). After 5 failed attempts
+// within 5 minutes, further attempts for that User ID are blocked with a
+// clear countdown until they're allowed to try again.
+const loginAttempts = {};
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOGIN_LOCKOUT_WINDOW_MS = 5 * 60 * 1000;
+
+function checkLoginLockout(key) {
+  const record = loginAttempts[key];
+  if (!record) return { locked: false };
+  const elapsed = Date.now() - record.firstAttemptAt;
+  if (elapsed > LOGIN_LOCKOUT_WINDOW_MS) {
+    delete loginAttempts[key];
+    return { locked: false };
+  }
+  if (record.count >= MAX_LOGIN_ATTEMPTS) {
+    const secondsLeft = Math.ceil((LOGIN_LOCKOUT_WINDOW_MS - elapsed) / 1000);
+    return { locked: true, secondsLeft };
+  }
+  return { locked: false };
+}
+
+function recordFailedLogin(key) {
+  const record = loginAttempts[key];
+  if (!record || (Date.now() - record.firstAttemptAt) > LOGIN_LOCKOUT_WINDOW_MS) {
+    loginAttempts[key] = { count: 1, firstAttemptAt: Date.now() };
+  } else {
+    record.count++;
+  }
+}
+
 async function checkLogin(userId, password, deviceInfo) {
   const key = String(userId || '').trim();
   const device = deviceInfo ? ` — ${deviceInfo}` : '';
+
+  const lockout = checkLoginLockout(key);
+  if (lockout.locked) {
+    const minutes = Math.ceil(lockout.secondsLeft / 60);
+    return { ok: false, error: `Too many failed attempts. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`, lockedOut: true, secondsLeft: lockout.secondsLeft };
+  }
+
   const users = await getAllUsers();
   if (!key || !users.hasOwnProperty(key)) {
+    recordFailedLogin(key);
     await logActivity(key || '(blank)', 'Login Failed', 'Unknown User ID' + device);
     return { ok: false, error: 'Invalid User ID or password.' };
   }
   if (users[key].password !== password) {
+    recordFailedLogin(key);
     await logActivity(users[key].name || key, 'Login Failed', 'Incorrect password' + device);
     return { ok: false, error: 'Invalid User ID or password.' };
   }
+  delete loginAttempts[key];
   const displayName = users[key].name || capitalizeFirst(key);
   await logActivity(displayName, 'Login Successful', `${key} (${users[key].role})${device}`);
 
