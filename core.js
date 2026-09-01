@@ -820,33 +820,6 @@ async function adminUnlock(rowId, password, actor) {
   return { ok: true };
 }
 
-async function adminLockAllDone(password, actor) {
-  const adminPassword = await getAdminPassword();
-  if (password !== adminPassword) return { ok: false, error: 'Incorrect admin password.' };
-
-  const sheetName = await sheetsApi.getMasterSheetName();
-  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
-  const headers = data[0];
-  let col = detectColumns(headers);
-  col = await ensureExtraColumns(sheetName, headers, col);
-
-  const pendingUpdates = [];
-  for (let r = 1; r < data.length; r++) {
-    const row = data[r];
-    const statusVal = String(row[col.status] || '').trim().toLowerCase();
-    const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true' || statusVal === 'completed' || statusVal === 'verified');
-    const isLocked = String(row[col.lock] || '').trim().toLowerCase() === 'yes';
-    if (isDone && !isLocked) {
-      pendingUpdates.push({ range: `${sheetName}!${colToLetter(col.lock)}${r + 1}`, values: [['Yes']] });
-    }
-  }
-  await sheetsApi.batchWriteRanges(pendingUpdates);
-  const count = pendingUpdates.length;
-
-  await logActivity(actor || 'Admin', 'Bulk Lock Verified', `Locked ${count} record(s)`);
-  return { ok: true, count };
-}
-
 // ---------- User management ----------
 
 function generateUserId(name, mobile) {
@@ -2796,7 +2769,7 @@ module.exports = {
   getAllUsers, writeAllUsers, effectivePermissions, capitalizeFirst, ALL_PERMISSION_KEYS,
   getAdminPassword, setAdminPassword,
   logActivity, getActivityLog,
-  checkLogin, getStudents, updateStatus, adminUnlock, adminLockAllDone,
+  checkLogin, getStudents, updateStatus, adminUnlock,
   checkUserIdAvailability, checkContactAvailability,
   createUser, deleteUser, updateUserDetails, getUserList,
   changeOwnPassword, adminResetPassword, changeAdminPassword,
