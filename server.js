@@ -41,7 +41,6 @@ const API_FUNCTIONS = {
   getStudents: core.getStudents,
   updateStatus: core.updateStatus,
   adminUnlock: core.adminUnlock,
-  adminLockAllDone: core.adminLockAllDone,
   getActivityLog: core.getActivityLog,
   // Phase 2
   checkUserIdAvailability: core.checkUserIdAvailability,
