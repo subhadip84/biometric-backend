@@ -345,6 +345,26 @@ async function getActivityLog(limit) {
   };
 }
 
+// Builds a per-student audit trail by filtering the existing Activity Log
+// rather than maintaining a separate history store. Every logged action
+// on a student (verify, mark pending, note update, unlock, etc.) already
+// includes "(row N)" in its details, consistently across both the main
+// roster and hostel - reusing that instead of duplicating storage.
+async function getStudentAuditTrail(rowId) {
+  const rowNum = parseInt(String(rowId).replace(/^h?row/, ''), 10);
+  if (!rowNum) return { ok: false, error: 'Invalid student id.' };
+
+  await sheetsApi.ensureSheet(sheetsApi.ACTIVITY_LOG_SHEET_NAME, ['Timestamp', 'Actor', 'Action', 'Details', 'IP']);
+  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:E`);
+  const marker = `(row ${rowNum})`;
+  const matches = rows
+    .filter(r => String(r[3] || '').includes(marker))
+    .map(r => ({ timestamp: r[0] || '', actor: r[1] || '', action: r[2] || '', details: r[3] || '' }))
+    .reverse();
+
+  return { ok: true, entries: matches };
+}
+
 // ---------- Unusual activity detection ----------
 // Deliberately rule-based rather than AI-judged: statistical thresholds are
 // more reliable and predictable for this than an LLM's subjective read of
@@ -2655,5 +2675,6 @@ module.exports = {
   parseRosterFilterQuery, explainUnusualActivity, generateShiftHandoffNote, findDuplicateStudents, findDuplicateHostelStudents,
   getReportTemplates, saveReportTemplate, deleteReportTemplate,
   bulkUpdateStatus, updateStudentNote, bulkUpdateHostelStatus, updateHostelStudentNote,
-  backupToNeonDatabase, getAvailableSheetsForBackup
+  backupToNeonDatabase, getAvailableSheetsForBackup,
+  getStudentAuditTrail
 };
