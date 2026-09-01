@@ -350,6 +350,14 @@ async function getActivityLog(limit) {
 // on a student (verify, mark pending, note update, unlock, etc.) already
 // includes "(row N)" in its details, consistently across both the main
 // roster and hostel - reusing that instead of duplicating storage.
+// Caches the recent activity log window briefly in memory - an admin
+// reviewing several students in a row would otherwise trigger a fresh
+// Sheets API read every single time a detail card opens, even though the
+// log itself has barely changed in that span.
+let cachedRecentLog = null;
+let cachedRecentLogAt = 0;
+const RECENT_LOG_CACHE_MS = 20 * 1000;
+
 async function getStudentAuditTrail(rowId) {
   const idStr = String(rowId);
   const isHostelContext = /^h/i.test(idStr);
@@ -362,16 +370,18 @@ async function getStudentAuditTrail(rowId) {
   // itself is what actually distinguishes which one a log entry belongs
   // to, since every hostel-related action consistently includes the word
   // "Hostel" and no main-roster action ever does.
-  // Only requests the most recent ~5000 rows from the API directly
-  // (rather than reading the entire, ever-growing log and discarding most
-  // of it afterward), using the sheet's own row count to build a targeted
-  // range - recent activity is what a timeline actually needs.
-  const RECENT_LOG_WINDOW = 5000;
-  const metadata = await sheetsApi.getSheetMetadata();
-  const logMeta = metadata.find(m => m.title === sheetsApi.ACTIVITY_LOG_SHEET_NAME);
-  const totalRows = (logMeta && logMeta.rowCount) || 0;
-  const startRow = totalRows > RECENT_LOG_WINDOW ? Math.max(2, totalRows - RECENT_LOG_WINDOW) : 2;
-  const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A${startRow}:E`);
+  let rows;
+  if (cachedRecentLog && (Date.now() - cachedRecentLogAt) < RECENT_LOG_CACHE_MS) {
+    rows = cachedRecentLog;
+  } else {
+    const RECENT_LOG_WINDOW = 5000;
+    const timestampColumn = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:A`);
+    const totalDataRows = timestampColumn.length;
+    const startRow = totalDataRows > RECENT_LOG_WINDOW ? (totalDataRows - RECENT_LOG_WINDOW) + 2 : 2;
+    rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A${startRow}:E`);
+    cachedRecentLog = rows;
+    cachedRecentLogAt = Date.now();
+  }
   const marker = `(row ${rowNum})`;
   const matches = rows
     .filter(r => {
