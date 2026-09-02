@@ -862,9 +862,12 @@ async function updateStudentNote(rowId, note, actor) {
   return { ok: true };
 }
 
-async function adminUnlock(rowId, password, actor) {
+async function adminUnlock(rowId, password, sessionToken) {
   const adminPassword = await getAdminPassword();
   if (password !== adminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
 
   const sheetName = await sheetsApi.getMasterSheetName();
   const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
@@ -934,9 +937,12 @@ async function checkContactAvailability(mobile, email, excludeUserId) {
   return { ok: true, mobileTaken: conflicts.mobileConflict, emailTaken: conflicts.emailConflict };
 }
 
-async function createUser(newUserId, newPassword, role, adminPassword, displayName, actor, permissions, autoGeneratePassword, mobile, email, school, autoGenerateUserId) {
+async function createUser(newUserId, newPassword, role, adminPassword, displayName, sessionToken, permissions, autoGeneratePassword, mobile, email, school, autoGenerateUserId) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
 
   role = (role === 'admin' || role === 'demo' || role === 'viewer') ? role : 'staff';
   let name = (displayName && String(displayName).trim()) || '';
@@ -994,14 +1000,18 @@ async function createUser(newUserId, newPassword, role, adminPassword, displayNa
   return { ok: true, userId: key, generatedPassword: autoGeneratePassword ? finalPassword : null };
 }
 
-async function deleteUser(targetUserId, adminPassword, actor, actorUserId) {
+async function deleteUser(targetUserId, adminPassword, sessionToken) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
+
   const key = String(targetUserId || '').trim();
   const users = await getAllUsers();
   if (!key || !users.hasOwnProperty(key)) return { ok: false, error: 'Unknown account.' };
 
-  if (actorUserId && users[actorUserId] && users[actorUserId].role === 'demo') {
+  if (users[session.userId] && users[session.userId].role === 'demo') {
     return { ok: false, error: 'Demo accounts cannot delete user accounts.' };
   }
 
@@ -1011,9 +1021,13 @@ async function deleteUser(targetUserId, adminPassword, actor, actorUserId) {
   return { ok: true };
 }
 
-async function updateUserDetails(targetUserId, newName, newRole, permissions, adminPassword, actor, mobile, email, school) {
+async function updateUserDetails(targetUserId, newName, newRole, permissions, adminPassword, sessionToken, mobile, email, school) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
+
   const key = String(targetUserId || '').trim();
   const users = await getAllUsers();
   if (!key || !users.hasOwnProperty(key)) return { ok: false, error: 'Unknown account.' };
@@ -1065,8 +1079,10 @@ async function getUserList() {
   return { ok: true, users: list };
 }
 
-async function changeOwnPassword(userId, oldPassword, newPassword) {
-  const key = String(userId || '').trim();
+async function changeOwnPassword(sessionToken, oldPassword, newPassword) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const key = session.userId;
   const users = await getAllUsers();
   if (!key || !users.hasOwnProperty(key)) return { ok: false, error: 'Invalid account.' };
   if (users[key].password !== oldPassword) return { ok: false, error: 'Current password is incorrect.' };
@@ -1077,36 +1093,45 @@ async function changeOwnPassword(userId, oldPassword, newPassword) {
   return { ok: true };
 }
 
-async function adminResetPassword(targetUserId, newPassword, adminPassword) {
+async function adminResetPassword(targetUserId, newPassword, adminPassword, sessionToken) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
+
   const key = String(targetUserId || '').trim();
   const users = await getAllUsers();
   if (!key || !users.hasOwnProperty(key)) return { ok: false, error: 'Unknown account.' };
   if (!newPassword || newPassword.length < 4) return { ok: false, error: 'New password must be at least 4 characters.' };
   users[key].password = newPassword;
   await writeAllUsers(users);
+  await logActivity(actor || 'Admin', 'Password Reset', `Reset password for ${key}`);
   return { ok: true };
 }
 
-async function changeAdminPassword(currentPassword, newPassword, actor) {
+async function changeAdminPassword(currentPassword, newPassword, sessionToken) {
   const existing = await getAdminPassword();
   if (currentPassword !== existing) return { ok: false, error: 'Current admin password is incorrect.' };
   if (!newPassword || newPassword.length < 6) return { ok: false, error: 'New admin password must be at least 6 characters.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
   await setAdminPassword(newPassword);
   await logActivity(actor || 'Admin', 'Admin Password Changed', 'The shared admin authorization password was updated.');
   return { ok: true };
 }
 
-async function deleteStudent(rowId, adminPassword, actor, actorUserId) {
+async function deleteStudent(rowId, adminPassword, sessionToken) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
 
-  if (actorUserId) {
-    const users = await getAllUsers();
-    if (users[actorUserId] && users[actorUserId].role === 'demo') {
-      return { ok: false, error: 'Demo accounts cannot delete student records.' };
-    }
+  const users = await getAllUsers();
+  if (users[session.userId] && users[session.userId].role === 'demo') {
+    return { ok: false, error: 'Demo accounts cannot delete student records.' };
   }
 
   const sheetName = await sheetsApi.getMasterSheetName();
@@ -1223,9 +1248,12 @@ async function validateImportRows(uploadedHeaders, uploadedRows) {
   };
 }
 
-async function importNewStudents(uploadedHeaders, uploadedRows, adminPassword, actor) {
+async function importNewStudents(uploadedHeaders, uploadedRows, adminPassword, sessionToken) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
 
   const sheetName = await sheetsApi.getMasterSheetName();
   const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
@@ -1279,9 +1307,12 @@ async function importNewStudents(uploadedHeaders, uploadedRows, adminPassword, a
   return { ok: true, added: newRows.length, skippedRows: skipped };
 }
 
-async function importVerificationUpdates(uploadedHeaders, uploadedRows, adminPassword, actor) {
+async function importVerificationUpdates(uploadedHeaders, uploadedRows, adminPassword, sessionToken) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
 
   const sheetName = await sheetsApi.getMasterSheetName();
   const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
@@ -1365,9 +1396,13 @@ async function getAnnouncements() {
   return { ok: true, announcements: list };
 }
 
-async function publishAnnouncement(message, adminPassword, publishedBy, style) {
+async function publishAnnouncement(message, adminPassword, sessionToken, style) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const publishedBy = session.name || session.userId;
+
   const list = await getSetting('ANNOUNCEMENTS', []);
   const now = new Date();
   const entry = {
@@ -1384,9 +1419,13 @@ async function publishAnnouncement(message, adminPassword, publishedBy, style) {
   return { ok: true };
 }
 
-async function updateAnnouncement(id, message, adminPassword, style, actor) {
+async function updateAnnouncement(id, message, adminPassword, style, sessionToken) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
+
   const list = await getSetting('ANNOUNCEMENTS', []);
   const idx = list.findIndex(a => a.id === id);
   if (idx === -1) return { ok: false, error: 'Message not found.' };
@@ -1397,9 +1436,13 @@ async function updateAnnouncement(id, message, adminPassword, style, actor) {
   return { ok: true };
 }
 
-async function deleteAnnouncement(id, adminPassword, actor) {
+async function deleteAnnouncement(id, adminPassword, sessionToken) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
+
   const list = await getSetting('ANNOUNCEMENTS', []);
   const filtered = list.filter(a => a.id !== id);
   await setSetting('ANNOUNCEMENTS', filtered);
@@ -1436,9 +1479,11 @@ async function logSessionIp(actor, ipAddress, failureReason) {
   return { ok: true };
 }
 
-async function logSessionEnd(actor, durationText, userId) {
-  await logActivity(actor || 'unknown', 'Session Ended', 'Duration: ' + (durationText || 'unknown'));
-  if (userId) await clearActiveSession(userId);
+async function logSessionEnd(actor, durationText, sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  const realActor = session ? (session.name || session.userId) : (actor || 'unknown');
+  await logActivity(realActor, 'Session Ended', 'Duration: ' + (durationText || 'unknown'));
+  if (session) await clearActiveSessionByUserId(session.userId);
   return { ok: true };
 }
 
@@ -1452,14 +1497,16 @@ async function logSessionEnd(actor, durationText, userId) {
 const ACTIVE_SESSIONS_KEY = 'activeSessions';
 const HEARTBEAT_STALE_MINUTES = 10; // no heartbeat for this long = presumed unexpectedly closed
 
-async function recordHeartbeat(userId, actorName) {
-  if (!userId) return { ok: false, error: 'Missing userId.' };
+async function recordHeartbeat(sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const userId = session.userId;
   const sessions = await getSetting(ACTIVE_SESSIONS_KEY, {});
   const existing = sessions[userId];
   const store = requestContext.getStore();
   const ip = (store && store.ip) || (existing && existing.ip) || '';
   sessions[userId] = {
-    actorName: actorName || (existing && existing.actorName) || 'unknown',
+    actorName: session.name || (existing && existing.actorName) || 'unknown',
     loginTime: (existing && existing.loginTime) || Date.now(),
     lastHeartbeat: Date.now(),
     ip
@@ -1468,7 +1515,9 @@ async function recordHeartbeat(userId, actorName) {
   return { ok: true };
 }
 
-async function clearActiveSession(userId) {
+// Internal helper - not exposed directly, used by logSessionEnd once it
+// has already established a validated identity from its own token check.
+async function clearActiveSessionByUserId(userId) {
   if (!userId) return { ok: true };
   const sessions = await getSetting(ACTIVE_SESSIONS_KEY, {});
   if (sessions[userId]) {
@@ -1476,6 +1525,14 @@ async function clearActiveSession(userId) {
     await setSetting(ACTIVE_SESSIONS_KEY, sessions);
   }
   return { ok: true };
+}
+
+// Public endpoint - requires its own valid token rather than trusting a
+// client-supplied userId, so no one can clear another user's presence.
+async function clearActiveSession(sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  return clearActiveSessionByUserId(session.userId);
 }
 
 // ---------- Public QR lookup (no login required) ----------
@@ -2068,9 +2125,12 @@ async function updateHostelStudentNote(rowId, note, actor) {
   return { ok: true };
 }
 
-async function adminUnlockHostel(rowId, password, actor) {
+async function adminUnlockHostel(rowId, password, sessionToken) {
   const currentAdminPassword = await getAdminPassword();
   if (password !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
 
   const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
   const headers = data[0];
@@ -2085,15 +2145,16 @@ async function adminUnlockHostel(rowId, password, actor) {
   return { ok: true };
 }
 
-async function deleteHostelStudent(rowId, adminPassword, actor, actorUserId) {
+async function deleteHostelStudent(rowId, adminPassword, sessionToken) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
 
-  if (actorUserId) {
-    const users = await getAllUsers();
-    if (users[actorUserId] && users[actorUserId].role === 'demo') {
-      return { ok: false, error: 'Demo accounts cannot delete student records.' };
-    }
+  const users = await getAllUsers();
+  if (users[session.userId] && users[session.userId].role === 'demo') {
+    return { ok: false, error: 'Demo accounts cannot delete student records.' };
   }
 
   const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
@@ -2225,9 +2286,12 @@ async function exportHostelVerifiedLastDayAsCsv() {
   return { ok: true, csv: csvText, rowCount: rows.length - 1, filename: `hostel_verified_last_day_${Date.now()}.csv` };
 }
 
-async function importNewHostelData(uploadedHeaders, uploadedRows, adminPassword, actor) {
+async function importNewHostelData(uploadedHeaders, uploadedRows, adminPassword, sessionToken) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
 
   await sheetsApi.ensureSheet(HOSTEL_SHEET_NAME, HOSTEL_BASE_HEADERS);
   const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
@@ -2276,9 +2340,12 @@ async function importNewHostelData(uploadedHeaders, uploadedRows, adminPassword,
   return { ok: true, added: newRows.length, skippedRows: skipped };
 }
 
-async function importHostelVerificationUpdates(uploadedHeaders, uploadedRows, adminPassword, actor) {
+async function importHostelVerificationUpdates(uploadedHeaders, uploadedRows, adminPassword, sessionToken) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
 
   const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
   const headers = data[0];
