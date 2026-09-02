@@ -710,13 +710,16 @@ async function getStudents() {
   return { ok: true, students, file: sheetName };
 }
 
-async function updateStatus(rowId, status, userId) {
+async function updateStatus(rowId, status, sessionToken) {
   if (status !== 'done' && status !== 'pending') {
     return { ok: false, error: "status must be 'done' or 'pending'" };
   }
 
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+
   const usersForRoleCheck = await getAllUsers();
-  const callerKey = userId ? String(userId) : '';
+  const callerKey = session.userId;
   if (usersForRoleCheck[callerKey] && usersForRoleCheck[callerKey].role === 'demo') {
     return { ok: false, error: 'Demo accounts cannot mark biometric verification status.' };
   }
@@ -741,7 +744,7 @@ async function updateStatus(rowId, status, userId) {
 
   const value = status === 'done' ? 'Done' : 'Not Done';
   const users = usersForRoleCheck;
-  const whoLabel = userId ? String(userId) : 'unknown';
+  const whoLabel = callerKey;
   const verifierRole = (users[whoLabel] && users[whoLabel].role === 'admin') ? 'admin' : 'staff';
   const verifierName = (users[whoLabel] && users[whoLabel].name) ? users[whoLabel].name : whoLabel;
   const storedVerifiedBy = verifierName + (verifierRole === 'admin' ? ' [Admin]' : '');
@@ -773,12 +776,15 @@ async function updateStatus(rowId, status, userId) {
   return { ok: true, verifiedByRole: verifierRole };
 }
 
-async function bulkUpdateStatus(rowIds, status, userId) {
+async function bulkUpdateStatus(rowIds, status, sessionToken) {
   if (status !== 'done' && status !== 'pending') {
     return { ok: false, error: "status must be 'done' or 'pending'" };
   }
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+
   const users = await getAllUsers();
-  const callerKey = userId ? String(userId) : '';
+  const callerKey = session.userId;
   if (users[callerKey] && users[callerKey].role === 'demo') {
     return { ok: false, error: 'Demo accounts cannot mark biometric verification status.' };
   }
@@ -793,7 +799,7 @@ async function bulkUpdateStatus(rowIds, status, userId) {
   col = await ensureExtraColumns(sheetName, headers, col);
 
   const value = status === 'done' ? 'Done' : 'Not Done';
-  const whoLabel = userId ? String(userId) : 'unknown';
+  const whoLabel = callerKey;
   const verifierRole = (users[whoLabel] && users[whoLabel].role === 'admin') ? 'admin' : 'staff';
   const verifierName = (users[whoLabel] && users[whoLabel].name) ? users[whoLabel].name : whoLabel;
   const storedVerifiedBy = verifierName + (verifierRole === 'admin' ? ' [Admin]' : '');
@@ -1915,12 +1921,15 @@ async function getHostelData() {
   return { ok: true, students };
 }
 
-async function updateHostelStatus(rowId, status, userId) {
+async function updateHostelStatus(rowId, status, sessionToken) {
   if (status !== 'done' && status !== 'pending') {
     return { ok: false, error: "status must be 'done' or 'pending'" };
   }
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+
   const users = await getAllUsers();
-  const callerKey = userId ? String(userId) : '';
+  const callerKey = session.userId;
   if (users[callerKey] && users[callerKey].role === 'demo') {
     return { ok: false, error: 'Demo accounts cannot mark face capture status.' };
   }
@@ -1972,12 +1981,15 @@ async function updateHostelStatus(rowId, status, userId) {
   return { ok: true };
 }
 
-async function bulkUpdateHostelStatus(rowIds, status, userId) {
+async function bulkUpdateHostelStatus(rowIds, status, sessionToken) {
   if (status !== 'done' && status !== 'pending') {
     return { ok: false, error: "status must be 'done' or 'pending'" };
   }
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+
   const users = await getAllUsers();
-  const callerKey = userId ? String(userId) : '';
+  const callerKey = session.userId;
   if (users[callerKey] && users[callerKey].role === 'demo') {
     return { ok: false, error: 'Demo accounts cannot mark face capture status.' };
   }
