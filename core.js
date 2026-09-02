@@ -4,6 +4,7 @@
 const sheetsApi = require('./sheets');
 const { AsyncLocalStorage } = require('async_hooks');
 const neonBackup = require('./neonBackup');
+const crypto = require('crypto');
 
 // Request-scoped context (currently just the client IP) so logActivity()
 // can record it without every function in the call chain needing to pass
@@ -523,6 +524,53 @@ function recordFailedLogin(key) {
   }
 }
 
+// ---------- Session tokens ----------
+// Phase 1 of moving away from trusting a plain, client-supplied User ID
+// string as proof of identity. A real, unguessable token is issued once at
+// login and must be presented on every subsequent action; the server
+// looks up who that token actually belongs to rather than trusting
+// whatever identity a request claims. In-memory (resets on server
+// restart, an accepted trade-off - a restart simply requires everyone to
+// log in again, same as today).
+const activeSessions = {}; // token -> { userId, role, name, expiresAt }
+const SESSION_DURATION_MS = 30 * 60 * 1000; // matches the frontend's existing 30-minute inactivity timeout
+
+function generateSessionToken(userId, role, name) {
+  const token = crypto.randomBytes(32).toString('hex');
+  activeSessions[token] = { userId, role, name, expiresAt: Date.now() + SESSION_DURATION_MS };
+  return token;
+}
+
+// Validates a token and, if valid, extends its expiry (sliding window) -
+// an actively-used session stays valid indefinitely; one left untouched
+// expires after the same 30 minutes the frontend already treats as
+// inactive. Returns the session's real identity, or null if the token is
+// missing, unrecognized, or expired.
+function validateSessionToken(token) {
+  const session = activeSessions[String(token || '')];
+  if (!session) return null;
+  if (Date.now() > session.expiresAt) {
+    delete activeSessions[token];
+    return null;
+  }
+  session.expiresAt = Date.now() + SESSION_DURATION_MS;
+  return session;
+}
+
+function invalidateSessionToken(token) {
+  delete activeSessions[String(token || '')];
+}
+
+// Periodic sweep for sessions nobody explicitly logged out of (browser
+// closed, tab crashed, etc.) - keeps the in-memory store from growing
+// unbounded over a long-running server process.
+setInterval(() => {
+  const now = Date.now();
+  Object.keys(activeSessions).forEach(token => {
+    if (now > activeSessions[token].expiresAt) delete activeSessions[token];
+  });
+}, 10 * 60 * 1000);
+
 async function checkLogin(userId, password, deviceInfo) {
   const key = String(userId || '').trim();
   const device = deviceInfo ? ` — ${deviceInfo}` : '';
@@ -555,9 +603,12 @@ async function checkLogin(userId, password, deviceInfo) {
     await writeAllUsers(users);
   }
 
+  const sessionToken = generateSessionToken(key, users[key].role, displayName);
+
   return {
     ok: true,
     userId: key,
+    sessionToken,
     isAdmin: users[key].role === 'admin' || users[key].role === 'demo',
     isDemo: users[key].role === 'demo',
     isViewer: users[key].role === 'viewer',
@@ -566,6 +617,13 @@ async function checkLogin(userId, password, deviceInfo) {
     mustChangePassword: !!users[key].mustChangePassword,
     showDemoWelcome
   };
+}
+
+// Explicitly invalidates a session token server-side at logout, rather
+// than relying solely on it eventually expiring on its own.
+async function logoutSession(token) {
+  invalidateSessionToken(token);
+  return { ok: true };
 }
 
 async function getStudents() {
@@ -2769,7 +2827,7 @@ module.exports = {
   getAllUsers, writeAllUsers, effectivePermissions, capitalizeFirst, ALL_PERMISSION_KEYS,
   getAdminPassword, setAdminPassword,
   logActivity, getActivityLog,
-  checkLogin, getStudents, updateStatus, adminUnlock,
+  checkLogin, logoutSession, validateSessionToken, getStudents, updateStatus, adminUnlock,
   checkUserIdAvailability, checkContactAvailability,
   createUser, deleteUser, updateUserDetails, getUserList,
   changeOwnPassword, adminResetPassword, changeAdminPassword,
