@@ -38,6 +38,7 @@ app.use(express.text({ type: '*/*', limit: '50mb' })); // frontend sends text/pl
 const API_FUNCTIONS = {
   // Phase 1
   checkLogin: core.checkLogin,
+  logoutSession: core.logoutSession,
   getStudents: core.getStudents,
   updateStatus: core.updateStatus,
   adminUnlock: core.adminUnlock,
