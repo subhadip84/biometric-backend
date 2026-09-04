@@ -843,7 +843,12 @@ async function bulkUpdateStatus(rowIds, status, sessionToken) {
   return { ok: true, updatedCount, skippedLocked };
 }
 
-async function updateStudentNote(rowId, note, actor) {
+async function updateStudentNote(rowId, note, sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  const actor = (users[session.userId] && users[session.userId].name) ? users[session.userId].name : session.userId;
+
   const sheetName = await sheetsApi.getMasterSheetName();
   const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
   const headers = data[0];
@@ -1647,9 +1652,12 @@ async function getLoginDigest(actorName) {
 // ---------- Undo verification (per-user permission, set via Manage Users) ----------
 const UNDO_WINDOW_SECONDS = 15;
 
-async function undoRecentVerification(rowId, actor, actorUserId) {
+async function undoRecentVerification(rowId, sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
   const users = await getAllUsers();
-  const caller = users[String(actorUserId || '')];
+  const caller = users[session.userId];
+  const actor = (caller && caller.name) ? caller.name : session.userId;
   const callerPerms = caller ? effectivePermissions(caller) : {};
   if (!callerPerms.allowUndo) return { ok: false, error: 'Your account is not allowed to undo verifications. Ask your admin to enable this under Manage Users.' };
 
@@ -1678,9 +1686,12 @@ async function undoRecentVerification(rowId, actor, actorUserId) {
   return { ok: true };
 }
 
-async function undoRecentHostelVerification(rowId, actor, actorUserId) {
+async function undoRecentHostelVerification(rowId, sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
   const users = await getAllUsers();
-  const caller = users[String(actorUserId || '')];
+  const caller = users[session.userId];
+  const actor = (caller && caller.name) ? caller.name : session.userId;
   const callerPerms = caller ? effectivePermissions(caller) : {};
   if (!callerPerms.allowUndo) return { ok: false, error: 'Your account is not allowed to undo verifications. Ask your admin to enable this under Manage Users.' };
 
@@ -2107,7 +2118,12 @@ async function bulkUpdateHostelStatus(rowIds, status, sessionToken) {
   return { ok: true, updatedCount, skippedLocked };
 }
 
-async function updateHostelStudentNote(rowId, note, actor) {
+async function updateHostelStudentNote(rowId, note, sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  const actor = (users[session.userId] && users[session.userId].name) ? users[session.userId].name : session.userId;
+
   const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
   const headers = data[0];
   let col = detectHostelColumns(headers);
@@ -2705,7 +2721,12 @@ async function getReportTemplates() {
   return { ok: true, templates };
 }
 
-async function saveReportTemplate(name, config, actor) {
+async function saveReportTemplate(name, config, sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  const actor = (users[session.userId] && users[session.userId].name) ? users[session.userId].name : session.userId;
+
   const trimmedName = String(name || '').trim();
   if (!trimmedName) return { ok: false, error: 'Give the report a name.' };
   const templates = await getSetting(REPORT_TEMPLATES_KEY, []);
@@ -2722,7 +2743,12 @@ async function saveReportTemplate(name, config, actor) {
   return { ok: true, template };
 }
 
-async function deleteReportTemplate(id, actor) {
+async function deleteReportTemplate(id, sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  const actor = (users[session.userId] && users[session.userId].name) ? users[session.userId].name : session.userId;
+
   const templates = await getSetting(REPORT_TEMPLATES_KEY, []);
   const target = templates.find(t => t.id === id);
   const filtered = templates.filter(t => t.id !== id);
@@ -2822,9 +2848,13 @@ async function findInconsistentLockStatus() {
   return { ok: true, records: inconsistent };
 }
 
-async function fixInconsistentLockStatus(rowIds, password, actor) {
+async function fixInconsistentLockStatus(rowIds, password, sessionToken) {
   const adminPassword = await getAdminPassword();
   if (password !== adminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  const actor = (users[session.userId] && users[session.userId].name) ? users[session.userId].name : session.userId;
   if (!Array.isArray(rowIds) || !rowIds.length) return { ok: false, error: 'No records selected.' };
 
   const sheetName = await sheetsApi.getMasterSheetName();
@@ -2874,9 +2904,13 @@ async function findInconsistentHostelLockStatus() {
   return { ok: true, records: inconsistent };
 }
 
-async function fixInconsistentHostelLockStatus(rowIds, password, actor) {
+async function fixInconsistentHostelLockStatus(rowIds, password, sessionToken) {
   const adminPassword = await getAdminPassword();
   if (password !== adminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  const actor = (users[session.userId] && users[session.userId].name) ? users[session.userId].name : session.userId;
   if (!Array.isArray(rowIds) || !rowIds.length) return { ok: false, error: 'No records selected.' };
 
   const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
