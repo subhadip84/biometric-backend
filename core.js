@@ -1158,6 +1158,61 @@ async function deleteStudent(rowId, adminPassword, sessionToken) {
   return { ok: true };
 }
 
+async function updateStudentDetails(rowId, fields, adminPassword, sessionToken) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
+
+  const users = await getAllUsers();
+  if (!users[session.userId] || users[session.userId].role !== 'admin') {
+    return { ok: false, error: 'Only admin accounts can edit student details.' };
+  }
+
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectColumns(headers);
+  col = await ensureExtraColumns(sheetName, headers, col);
+
+  const rowNum = parseInt(String(rowId).replace('row', ''), 10);
+  if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid student id.' };
+  const row = data[rowNum - 1] || [];
+
+  // Only these core identifying fields are editable here - status, lock,
+  // and verification history are managed through their own dedicated
+  // workflows, not direct editing.
+  const EDITABLE_FIELDS = {
+    name: col.name, appNo: col.appNo, regNo: col.regNo,
+    machineCode: col.machineCode, siteCode: col.siteCode, studentType: col.studentType
+  };
+
+  const updates = [];
+  const changeSummary = [];
+  Object.keys(EDITABLE_FIELDS).forEach(key => {
+    if (!(key in fields)) return;
+    const colIndex = EDITABLE_FIELDS[key];
+    if (colIndex === -1 || colIndex === undefined) return;
+    const oldVal = String(row[colIndex] || '').trim();
+    const newVal = String(fields[key] || '').trim();
+    if (oldVal === newVal) return;
+    updates.push({ col: colIndex, val: newVal });
+    changeSummary.push(`${key}: "${oldVal}" → "${newVal}"`);
+  });
+
+  if (!updates.length) return { ok: true, changed: false };
+
+  await sheetsApi.batchWriteRanges(
+    updates.map(u => ({ range: `${sheetName}!${colToLetter(u.col)}${rowNum}`, values: [[u.val]] }))
+  );
+
+  const studentName = col.name > -1 ? String(row[col.name] || '') : '';
+  await logActivity(actor || 'Admin', 'Edited Student Details', `${studentName} (row ${rowNum}) — ${changeSummary.join('; ')}`);
+
+  return { ok: true, changed: true };
+}
+
 async function getDistinctSiteCodes() {
   const sheetName = await sheetsApi.getMasterSheetName();
   const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
@@ -2190,6 +2245,59 @@ async function deleteHostelStudent(rowId, adminPassword, sessionToken) {
   return { ok: true };
 }
 
+async function updateHostelStudentDetails(rowId, fields, adminPassword, sessionToken) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
+
+  const users = await getAllUsers();
+  if (!users[session.userId] || users[session.userId].role !== 'admin') {
+    return { ok: false, error: 'Only admin accounts can edit student details.' };
+  }
+
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const rowNum = parseInt(String(rowId).replace('hrow', ''), 10);
+  if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid record id.' };
+  const row = data[rowNum - 1] || [];
+
+  const EDITABLE_FIELDS = {
+    name: col['studentname'], appNo: col['applicationno'], regNo: col['registrationno'],
+    machineCode: col['machinecode'], siteCode: col['sitecode'], course: col['course'],
+    admissionType: col['admissiontype'], gender: col['gender'], hostelName: col['hostelname'],
+    roomNo: col['roomno'], foodCoupon: col['foodcoupon']
+  };
+
+  const updates = [];
+  const changeSummary = [];
+  Object.keys(EDITABLE_FIELDS).forEach(key => {
+    if (!(key in fields)) return;
+    const colIndex = EDITABLE_FIELDS[key];
+    if (colIndex === -1 || colIndex === undefined) return;
+    const oldVal = String(row[colIndex] || '').trim();
+    const newVal = String(fields[key] || '').trim();
+    if (oldVal === newVal) return;
+    updates.push({ col: colIndex, val: newVal });
+    changeSummary.push(`${key}: "${oldVal}" → "${newVal}"`);
+  });
+
+  if (!updates.length) return { ok: true, changed: false };
+
+  await sheetsApi.batchWriteRanges(
+    updates.map(u => ({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(u.col)}${rowNum}`, values: [[u.val]] }))
+  );
+
+  const studentName = col['studentname'] > -1 ? String(row[col['studentname']] || '') : '';
+  await logActivity(actor || 'Admin', 'Edited Hostel Student Details', `${studentName} (row ${rowNum}) — ${changeSummary.join('; ')}`);
+
+  return { ok: true, changed: true };
+}
+
 async function exportHostelAsCsv(statusFilter, academicYearFilter) {
   const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
   if (!data.length) return { ok: false, error: 'Hostel data is empty.' };
@@ -2944,14 +3052,14 @@ module.exports = {
   checkUserIdAvailability, checkContactAvailability,
   createUser, deleteUser, updateUserDetails, getUserList,
   changeOwnPassword, adminResetPassword, changeAdminPassword,
-  deleteStudent, getDistinctSiteCodes,
+  deleteStudent, updateStudentDetails, getDistinctSiteCodes,
   validateImportRows, importNewStudents, importVerificationUpdates,
   getAnnouncements, publishAnnouncement, updateAnnouncement, deleteAnnouncement,
   logHelpQuestion, getHelpQuestionStats,
   logSessionIp, logSessionEnd, recordHeartbeat, clearActiveSession, checkStaleSessions,
   exportRosterAsCsv,
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
-  getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv, exportHostelVerifiedLastDayAsCsv,
+  getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, updateHostelStudentDetails, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv, exportHostelVerifiedLastDayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo,
   askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
   getStaffLeaderboard, getLoginDigest, undoRecentVerification, undoRecentHostelVerification,
