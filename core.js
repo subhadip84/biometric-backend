@@ -2720,7 +2720,7 @@ async function generateShiftHandoffNote(actorName, sinceTimestampMs) {
         reasoning_effort: 'low',
         temperature: 0.3,
         messages: [
-          { role: 'system', content: 'You write an extremely concise shift handoff note for the next staff member taking over a student verification desk, based on a list of actions the outgoing staff member performed this session. STRICT LIMIT: exactly 2 short lines of plain text, no bullet points, no headers, no line breaks within a line. Line 1: what was done (totals only - imports, verifications, new students). Line 2: anything worth flagging, or "Nothing unusual to flag" if there is nothing. No preamble, no markdown, just the 2 lines separated by one newline.' },
+          { role: 'system', content: 'You write an extremely concise shift handoff note for the next staff member taking over a student verification desk, based on a list of actions the outgoing staff member performed this session. STRICT LIMIT: exactly 2 short lines of plain text, no bullet points, no headers, no line breaks within a line. Line 1: summarize ONLY the kinds of actions that actually appear in the list below, with their totals - do not mention imports, new students, hostel activity, or any other category that never appears in the list, even as zero. For example, if the list only contains "Hostel Face Capture Verified" entries, line 1 should say something like "12 hostel face-capture verifications" - it should NOT say "0 imports, 0 new students" or mention any category absent from the list. Line 2: anything worth flagging, or "Nothing unusual to flag" if there is nothing. No preamble, no markdown, just the 2 lines separated by one newline.' },
           { role: 'user', content: actionsSummary }
         ]
       })
