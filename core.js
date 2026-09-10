@@ -2703,8 +2703,9 @@ async function generateShiftHandoffNote(actorName, sinceTimestampMs) {
   try {
     const rows = await sheetsApi.readRange(`${sheetsApi.ACTIVITY_LOG_SHEET_NAME}!A2:E`);
     const sinceMs = Number(sinceTimestampMs) || (Date.now() - 8 * 60 * 60 * 1000);
+    const normalizedActor = String(actorName || '').trim().toLowerCase();
     const relevant = rows.filter(r => {
-      if (r[1] !== actorName) return false;
+      if (String(r[1] || '').trim().toLowerCase() !== normalizedActor) return false;
       const t = parseTimestampLoose(r[0]);
       return t && t.getTime() >= sinceMs;
     });
