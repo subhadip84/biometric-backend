@@ -1254,6 +1254,45 @@ async function setStudentActiveStatus(rowId, isActive, sessionToken) {
   return { ok: true };
 }
 
+async function bulkSetActiveStatus(rowIds, isActive, sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  if (!users[session.userId] || users[session.userId].role !== 'admin') {
+    return { ok: false, error: 'Only admin accounts can change a student\'s active status.' };
+  }
+  const actor = users[session.userId].name || session.userId;
+
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectColumns(headers);
+  col = await ensureExtraColumns(sheetName, headers, col);
+
+  const allUpdates = [];
+  let updatedCount = 0;
+  const updatedNames = [];
+
+  (rowIds || []).forEach(rowId => {
+    const rowNum = parseInt(String(rowId).replace('row', ''), 10);
+    if (!rowNum || rowNum < 2) return;
+    const row = data[rowNum - 1] || [];
+    allUpdates.push({ range: `${sheetName}!${colToLetter(col.active)}${rowNum}`, values: [[isActive ? 'Yes' : 'No']] });
+    updatedCount++;
+    const studentName = col.name > -1 ? String(row[col.name] || '') : '';
+    if (studentName) updatedNames.push(studentName);
+  });
+
+  if (!allUpdates.length) return { ok: true, updatedCount: 0 };
+
+  await sheetsApi.batchWriteRanges(allUpdates);
+
+  const summary = updatedNames.length ? updatedNames.slice(0, 15).join(', ') + (updatedNames.length > 15 ? `, +${updatedNames.length - 15} more` : '') : '';
+  await logActivity(actor || 'Admin', isActive ? 'Bulk Marked Students Active' : 'Bulk Marked Students Inactive', `${updatedCount} student(s): ${summary}`);
+
+  return { ok: true, updatedCount };
+}
+
 async function getDistinctSiteCodes() {
   const sheetName = await sheetsApi.getMasterSheetName();
   const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
@@ -1847,7 +1886,7 @@ function csvEscape(val) {
     : str;
 }
 
-async function exportRosterAsCsv(statusFilter, siteFilter, academicYearFilter) {
+async function exportRosterAsCsv(statusFilter, siteFilter, academicYearFilter, includeInactive) {
   const sheetName = await sheetsApi.getMasterSheetName();
   const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
   const headers = data[0];
@@ -1866,6 +1905,10 @@ async function exportRosterAsCsv(statusFilter, siteFilter, academicYearFilter) {
   let serialCounter = 1;
   for (let r = 1; r < data.length; r++) {
     let row = data[r];
+    if (!includeInactive && col.active > -1) {
+      const activeVal = String(row[col.active] || '').trim().toLowerCase();
+      if (activeVal === 'no') continue;
+    }
     if (wantStatus) {
       const statusVal = col.status > -1 ? String(row[col.status] || '').trim().toLowerCase() : '';
       const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true' || statusVal === 'completed' || statusVal === 'verified');
@@ -2371,7 +2414,45 @@ async function setHostelStudentActiveStatus(rowId, isActive, sessionToken) {
   return { ok: true };
 }
 
-async function exportHostelAsCsv(statusFilter, academicYearFilter) {
+async function bulkSetHostelActiveStatus(rowIds, isActive, sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  if (!users[session.userId] || users[session.userId].role !== 'admin') {
+    return { ok: false, error: 'Only admin accounts can change a student\'s active status.' };
+  }
+  const actor = users[session.userId].name || session.userId;
+
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const allUpdates = [];
+  let updatedCount = 0;
+  const updatedNames = [];
+
+  (rowIds || []).forEach(rowId => {
+    const rowNum = parseInt(String(rowId).replace('hrow', ''), 10);
+    if (!rowNum || rowNum < 2) return;
+    const row = data[rowNum - 1] || [];
+    allUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.active)}${rowNum}`, values: [[isActive ? 'Yes' : 'No']] });
+    updatedCount++;
+    const studentName = col['studentname'] > -1 ? String(row[col['studentname']] || '') : '';
+    if (studentName) updatedNames.push(studentName);
+  });
+
+  if (!allUpdates.length) return { ok: true, updatedCount: 0 };
+
+  await sheetsApi.batchWriteRanges(allUpdates);
+
+  const summary = updatedNames.length ? updatedNames.slice(0, 15).join(', ') + (updatedNames.length > 15 ? `, +${updatedNames.length - 15} more` : '') : '';
+  await logActivity(actor || 'Admin', isActive ? 'Bulk Marked Hostel Students Active' : 'Bulk Marked Hostel Students Inactive', `${updatedCount} student(s): ${summary}`);
+
+  return { ok: true, updatedCount };
+}
+
+async function exportHostelAsCsv(statusFilter, academicYearFilter, includeInactive) {
   const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
   if (!data.length) return { ok: false, error: 'Hostel data is empty.' };
   const headers = data[0];
@@ -2390,6 +2471,10 @@ async function exportHostelAsCsv(statusFilter, academicYearFilter) {
   let serialCounter = 1;
   for (let r = 1; r < data.length; r++) {
     let row = data[r];
+    if (!includeInactive && col.active > -1) {
+      const activeVal = String(row[col.active] || '').trim().toLowerCase();
+      if (activeVal === 'no') continue;
+    }
     if (wantStatus) {
       const statusVal = String(row[col.status] || '').trim().toLowerCase();
       const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true');
@@ -3126,14 +3211,14 @@ module.exports = {
   checkUserIdAvailability, checkContactAvailability,
   createUser, deleteUser, updateUserDetails, getUserList,
   changeOwnPassword, adminResetPassword, changeAdminPassword,
-  deleteStudent, updateStudentDetails, setStudentActiveStatus, getDistinctSiteCodes,
+  deleteStudent, updateStudentDetails, setStudentActiveStatus, bulkSetActiveStatus, getDistinctSiteCodes,
   validateImportRows, importNewStudents, importVerificationUpdates,
   getAnnouncements, publishAnnouncement, updateAnnouncement, deleteAnnouncement,
   logHelpQuestion, getHelpQuestionStats,
   logSessionIp, logSessionEnd, recordHeartbeat, clearActiveSession, checkStaleSessions,
   exportRosterAsCsv,
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
-  getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, updateHostelStudentDetails, setHostelStudentActiveStatus, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv, exportHostelVerifiedLastDayAsCsv,
+  getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, updateHostelStudentDetails, setHostelStudentActiveStatus, bulkSetHostelActiveStatus, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv, exportHostelVerifiedLastDayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo,
   askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
   getStaffLeaderboard, getLoginDigest, undoRecentVerification, undoRecentHostelVerification,
