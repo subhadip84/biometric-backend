@@ -146,6 +146,12 @@ function detectColumns(headers) {
   }
   col.academicYear = academicYearCol;
 
+  let activeCol = -1;
+  for (let i = 0; i < headers.length; i++) {
+    if (normalize(headers[i]) === 'active') { activeCol = i; break; }
+  }
+  col.active = activeCol;
+
   return col;
 }
 
@@ -172,6 +178,7 @@ async function ensureExtraColumns(sheetName, headers, col) {
   if (col.notes === -1) { col.notes = headers.length + additions.length; additions.push('Notes'); changed = true; }
   if (col.photoUrl === -1) { col.photoUrl = headers.length + additions.length; additions.push('Photo URL'); changed = true; }
   if (col.academicYear === -1) { col.academicYear = headers.length + additions.length; additions.push('Academic Year'); changed = true; }
+  if (col.active === -1) { col.active = headers.length + additions.length; additions.push('Active'); changed = true; }
 
   if (changed) {
     const startCol = colToLetter(headers.length);
@@ -679,6 +686,9 @@ async function getStudents() {
     if (!storedAcademicYear && academicYearVal) academicYearNeedsBackfill = true;
     academicYearColumn.push([academicYearVal]);
 
+    const activeVal = col.active > -1 ? String(row[col.active] || '').trim().toLowerCase() : '';
+    const isActive = activeVal !== 'no'; // blank/missing defaults to active, for existing rows predating this column
+
     students.push({
       id: 'row' + (r + 1),
       row: r + 1,
@@ -698,7 +708,8 @@ async function getStudents() {
       firstVerifiedByIsAdmin: isAdminLabel(String(firstVerifiedByVal)),
       notes: String(notesVal),
       photoUrl: String(photoUrlVal),
-      academicYear: academicYearVal
+      academicYear: academicYearVal,
+      active: isActive
     });
   }
 
@@ -1211,6 +1222,36 @@ async function updateStudentDetails(rowId, fields, adminPassword, sessionToken) 
   await logActivity(actor || 'Admin', 'Edited Student Details', `${studentName} (row ${rowNum}) — ${changeSummary.join('; ')}`);
 
   return { ok: true, changed: true };
+}
+
+// Deliberately no admin password required here, unlike deleteStudent -
+// this is a reversible, non-destructive toggle (a student can always be
+// set back to active), not a destructive action.
+async function setStudentActiveStatus(rowId, isActive, sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  if (!users[session.userId] || users[session.userId].role !== 'admin') {
+    return { ok: false, error: 'Only admin accounts can change a student\'s active status.' };
+  }
+  const actor = users[session.userId].name || session.userId;
+
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectColumns(headers);
+  col = await ensureExtraColumns(sheetName, headers, col);
+
+  const rowNum = parseInt(String(rowId).replace('row', ''), 10);
+  if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid student id.' };
+  const row = data[rowNum - 1] || [];
+
+  await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.active)}${rowNum}`, [[isActive ? 'Yes' : 'No']]);
+
+  const studentName = col.name > -1 ? String(row[col.name] || '') : '';
+  await logActivity(actor || 'Admin', isActive ? 'Marked Student Active' : 'Marked Student Inactive', `${studentName} (row ${rowNum})`);
+
+  return { ok: true };
 }
 
 async function getDistinctSiteCodes() {
@@ -1964,6 +2005,7 @@ function detectHostelColumns(headers) {
   if (col.notes === undefined) col.notes = -1;
   if (col.photoUrl === undefined) col.photoUrl = (col['photourl'] !== undefined ? col['photourl'] : (col['photo'] !== undefined ? col['photo'] : -1));
   if (col.academicYear === undefined) col.academicYear = (col['academicyear'] !== undefined ? col['academicyear'] : -1);
+  if (col.active === undefined) col.active = (col['active'] !== undefined ? col['active'] : -1);
   return col;
 }
 
@@ -1978,6 +2020,7 @@ async function ensureHostelExtraColumns(headers, col) {
   if (col.notes === -1) { col.notes = headers.length + additions.length; additions.push('Notes'); }
   if (col.photoUrl === -1) { col.photoUrl = headers.length + additions.length; additions.push('Photo URL'); }
   if (col.academicYear === -1) { col.academicYear = headers.length + additions.length; additions.push('Academic Year'); }
+  if (col.active === -1) { col.active = headers.length + additions.length; additions.push('Active'); }
   if (additions.length) {
     await sheetsApi.writeRange(`${HOSTEL_SHEET_NAME}!${colToLetter(headers.length)}1`, [additions]);
   }
@@ -2011,6 +2054,9 @@ async function getHostelData() {
     if (!storedAcademicYear && academicYearVal) academicYearNeedsBackfill = true;
     academicYearColumn.push([academicYearVal]);
 
+    const activeVal = col.active > -1 ? String(row[col.active] || '').trim().toLowerCase() : '';
+    const isActive = activeVal !== 'no';
+
     students.push({
       id: 'hrow' + (r + 1),
       registrationNo: String(regNo || ''),
@@ -2032,7 +2078,8 @@ async function getHostelData() {
       firstVerifiedAt: String(row[col.firstVerifiedAt] || ''),
       notes: String(row[col.notes] || ''),
       photoUrl: String(row[col.photoUrl] || ''),
-      academicYear: academicYearVal
+      academicYear: academicYearVal,
+      active: isActive
     });
   }
 
@@ -2296,6 +2343,32 @@ async function updateHostelStudentDetails(rowId, fields, adminPassword, sessionT
   await logActivity(actor || 'Admin', 'Edited Hostel Student Details', `${studentName} (row ${rowNum}) — ${changeSummary.join('; ')}`);
 
   return { ok: true, changed: true };
+}
+
+async function setHostelStudentActiveStatus(rowId, isActive, sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  if (!users[session.userId] || users[session.userId].role !== 'admin') {
+    return { ok: false, error: 'Only admin accounts can change a student\'s active status.' };
+  }
+  const actor = users[session.userId].name || session.userId;
+
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const rowNum = parseInt(String(rowId).replace('hrow', ''), 10);
+  if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid record id.' };
+  const row = data[rowNum - 1] || [];
+
+  await sheetsApi.writeRange(`${HOSTEL_SHEET_NAME}!${colToLetter(col.active)}${rowNum}`, [[isActive ? 'Yes' : 'No']]);
+
+  const studentName = col['studentname'] > -1 ? String(row[col['studentname']] || '') : '';
+  await logActivity(actor || 'Admin', isActive ? 'Marked Hostel Student Active' : 'Marked Hostel Student Inactive', `${studentName} (row ${rowNum})`);
+
+  return { ok: true };
 }
 
 async function exportHostelAsCsv(statusFilter, academicYearFilter) {
@@ -3053,14 +3126,14 @@ module.exports = {
   checkUserIdAvailability, checkContactAvailability,
   createUser, deleteUser, updateUserDetails, getUserList,
   changeOwnPassword, adminResetPassword, changeAdminPassword,
-  deleteStudent, updateStudentDetails, getDistinctSiteCodes,
+  deleteStudent, updateStudentDetails, setStudentActiveStatus, getDistinctSiteCodes,
   validateImportRows, importNewStudents, importVerificationUpdates,
   getAnnouncements, publishAnnouncement, updateAnnouncement, deleteAnnouncement,
   logHelpQuestion, getHelpQuestionStats,
   logSessionIp, logSessionEnd, recordHeartbeat, clearActiveSession, checkStaleSessions,
   exportRosterAsCsv,
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
-  getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, updateHostelStudentDetails, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv, exportHostelVerifiedLastDayAsCsv,
+  getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, updateHostelStudentDetails, setHostelStudentActiveStatus, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv, exportHostelVerifiedLastDayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo,
   askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
   getStaffLeaderboard, getLoginDigest, undoRecentVerification, undoRecentHostelVerification,
