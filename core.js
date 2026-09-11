@@ -1507,6 +1507,61 @@ async function importVerificationUpdates(uploadedHeaders, uploadedRows, adminPas
   return { ok: true, updated, alreadyDone, notFoundRows };
 }
 
+async function importInactiveList(uploadedHeaders, uploadedRows, adminPassword, sessionToken) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  if (!users[session.userId] || users[session.userId].role !== 'admin') {
+    return { ok: false, error: 'Only admin accounts can mark students inactive.' };
+  }
+  const actor = users[session.userId].name || session.userId;
+
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectColumns(headers);
+  col = await ensureExtraColumns(sheetName, headers, col);
+
+  const uploadCol = detectImportColumns(uploadedHeaders);
+
+  let updated = 0, alreadyInactive = 0;
+  const notFoundRows = [];
+  const pendingUpdates = [];
+
+  for (const uRow of uploadedRows) {
+    const name = uploadCol.name > -1 ? String(uRow[uploadCol.name] || '').trim() : '';
+    const appNo = uploadCol.appNo > -1 ? String(uRow[uploadCol.appNo] || '').trim() : '';
+    const regNo = uploadCol.regNo > -1 ? String(uRow[uploadCol.regNo] || '').trim() : '';
+
+    let matchedRowNum = -1;
+    for (let r = 1; r < data.length; r++) {
+      const rRegNo = col.regNo > -1 ? String(data[r][col.regNo] || '').trim().toLowerCase() : '';
+      const rAppNo = col.appNo > -1 ? String(data[r][col.appNo] || '').trim().toLowerCase() : '';
+      if (regNo && rRegNo === regNo.toLowerCase()) { matchedRowNum = r + 1; break; }
+      if (appNo && rAppNo === appNo.toLowerCase()) { matchedRowNum = r + 1; break; }
+    }
+
+    if (matchedRowNum === -1) {
+      notFoundRows.push({ name, appNo, regNo });
+      continue;
+    }
+
+    const rowData = data[matchedRowNum - 1];
+    const currentActive = String(rowData[col.active] || '').trim().toLowerCase();
+    if (currentActive === 'no') { alreadyInactive++; continue; }
+
+    pendingUpdates.push({ range: `${sheetName}!${colToLetter(col.active)}${matchedRowNum}`, values: [['No']] });
+    updated++;
+  }
+
+  if (pendingUpdates.length) await sheetsApi.batchWriteRanges(pendingUpdates);
+
+  await logActivity(actor || 'Admin', 'Imported Inactive List', `${updated} marked inactive, ${alreadyInactive} already inactive, ${notFoundRows.length} not found`);
+  return { ok: true, updated, alreadyInactive, notFoundRows };
+}
+
 // ---------- Generic Settings storage (JSON blobs, e.g. announcements/stats) ----------
 
 async function getSetting(key, defaultValue) {
@@ -2672,6 +2727,56 @@ async function importHostelVerificationUpdates(uploadedHeaders, uploadedRows, ad
   return { ok: true, updated, alreadyDone, notFoundRows };
 }
 
+async function importHostelInactiveList(uploadedHeaders, uploadedRows, adminPassword, sessionToken) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  if (!users[session.userId] || users[session.userId].role !== 'admin') {
+    return { ok: false, error: 'Only admin accounts can mark students inactive.' };
+  }
+  const actor = users[session.userId].name || session.userId;
+
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const uCol = {};
+  uploadedHeaders.forEach((h, i) => { uCol[normalize(h)] = i; });
+
+  let updated = 0, alreadyInactive = 0;
+  const notFoundRows = [];
+  const pendingUpdates = [];
+
+  uploadedRows.forEach(uRow => {
+    const appNo = uCol['applicationno'] > -1 ? String(uRow[uCol['applicationno']] || '').trim() : '';
+    const regNo = uCol['registrationno'] > -1 ? String(uRow[uCol['registrationno']] || '').trim() : '';
+    const name = uCol['studentname'] > -1 ? String(uRow[uCol['studentname']] || '').trim() : '';
+
+    let matchedRowNum = -1;
+    for (let r = 1; r < data.length; r++) {
+      const rReg = String(data[r][col['registrationno']] || '').trim().toLowerCase();
+      const rApp = String(data[r][col['applicationno']] || '').trim().toLowerCase();
+      if (regNo && rReg === regNo.toLowerCase()) { matchedRowNum = r + 1; break; }
+      if (appNo && rApp === appNo.toLowerCase()) { matchedRowNum = r + 1; break; }
+    }
+    if (matchedRowNum === -1) { notFoundRows.push({ name, appNo, regNo }); return; }
+
+    const rowData = data[matchedRowNum - 1];
+    const currentActive = String(rowData[col.active] || '').trim().toLowerCase();
+    if (currentActive === 'no') { alreadyInactive++; return; }
+
+    pendingUpdates.push({ range: `${HOSTEL_SHEET_NAME}!${colToLetter(col.active)}${matchedRowNum}`, values: [['No']] });
+    updated++;
+  });
+
+  if (pendingUpdates.length) await sheetsApi.batchWriteRanges(pendingUpdates);
+  await logActivity(actor || 'Admin', 'Imported Hostel Inactive List', `${updated} marked inactive, ${alreadyInactive} already inactive, ${notFoundRows.length} not found`);
+  return { ok: true, updated, alreadyInactive, notFoundRows };
+}
+
 // ---------- AI-powered Help Assistant ----------
 
 const HELP_ASSISTANT_SYSTEM_PROMPT = `You are the in-app Help Assistant for "Biometric Verification Desk", an internal tool for Adamas University IT staff (AKC IT Support) tracking student biometric verification and hostel face-capture verification.
@@ -3212,14 +3317,14 @@ module.exports = {
   createUser, deleteUser, updateUserDetails, getUserList,
   changeOwnPassword, adminResetPassword, changeAdminPassword,
   deleteStudent, updateStudentDetails, setStudentActiveStatus, bulkSetActiveStatus, getDistinctSiteCodes,
-  validateImportRows, importNewStudents, importVerificationUpdates,
+  validateImportRows, importNewStudents, importVerificationUpdates, importInactiveList,
   getAnnouncements, publishAnnouncement, updateAnnouncement, deleteAnnouncement,
   logHelpQuestion, getHelpQuestionStats,
   logSessionIp, logSessionEnd, recordHeartbeat, clearActiveSession, checkStaleSessions,
   exportRosterAsCsv,
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
   getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, updateHostelStudentDetails, setHostelStudentActiveStatus, bulkSetHostelActiveStatus, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv, exportHostelVerifiedLastDayAsCsv,
-  importNewHostelData, importHostelVerificationUpdates, getLastHostelImportInfo,
+  importNewHostelData, importHostelVerificationUpdates, importHostelInactiveList, getLastHostelImportInfo,
   askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
   getStaffLeaderboard, getLoginDigest, undoRecentVerification, undoRecentHostelVerification,
   publicLookupStudent, publicLookupHostelStudent,
