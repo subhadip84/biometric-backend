@@ -61,6 +61,7 @@ const API_FUNCTIONS = {
   validateImportRows: core.validateImportRows,
   importNewStudents: core.importNewStudents,
   importVerificationUpdates: core.importVerificationUpdates,
+  importInactiveList: core.importInactiveList,
   // Phase 3
   getAnnouncements: core.getAnnouncements,
   publishAnnouncement: core.publishAnnouncement,
@@ -118,6 +119,7 @@ const API_FUNCTIONS = {
   exportHostelVerifiedLastDayAsCsv: core.exportHostelVerifiedLastDayAsCsv,
   importNewHostelData: core.importNewHostelData,
   importHostelVerificationUpdates: core.importHostelVerificationUpdates,
+  importHostelInactiveList: core.importHostelInactiveList,
   getLastHostelImportInfo: core.getLastHostelImportInfo,
   triggerBackupNow: async () => { await runDailyBackup(); return { ok: true, message: 'Backup triggered.' }; }
 };
