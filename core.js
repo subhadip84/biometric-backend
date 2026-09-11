@@ -1946,9 +1946,13 @@ async function exportRosterAsCsv(statusFilter, siteFilter, academicYearFilter, i
   const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
   const headers = data[0];
   const col = detectColumns(headers);
-  const wantStatus = statusFilter && statusFilter !== 'all' ? statusFilter : null;
+  const wantStatus = statusFilter && statusFilter !== 'all' && statusFilter !== 'active' && statusFilter !== 'inactive' ? statusFilter : null;
   const wantSite = siteFilter && siteFilter !== 'all' ? String(siteFilter).trim().toLowerCase() : null;
   const wantAcademicYear = academicYearFilter && academicYearFilter !== 'all' ? academicYearFilter : null;
+  // "all" now means genuinely everyone, since active/inactive are their own explicit
+  // options; "done"/"pending" still exclude inactive by default (the normal working
+  // set), unless includeInactive is separately passed.
+  const excludeInactiveByDefault = statusFilter !== 'all' && statusFilter !== 'inactive' && !includeInactive;
 
   let serialColIndex = -1;
   for (let h = 0; h < headers.length; h++) {
@@ -1960,10 +1964,11 @@ async function exportRosterAsCsv(statusFilter, siteFilter, academicYearFilter, i
   let serialCounter = 1;
   for (let r = 1; r < data.length; r++) {
     let row = data[r];
-    if (!includeInactive && col.active > -1) {
-      const activeVal = String(row[col.active] || '').trim().toLowerCase();
-      if (activeVal === 'no') continue;
-    }
+    const activeVal = col.active > -1 ? String(row[col.active] || '').trim().toLowerCase() : '';
+    const isInactive = activeVal === 'no';
+    if (statusFilter === 'active' && isInactive) continue;
+    if (statusFilter === 'inactive' && !isInactive) continue;
+    if (excludeInactiveByDefault && isInactive) continue;
     if (wantStatus) {
       const statusVal = col.status > -1 ? String(row[col.status] || '').trim().toLowerCase() : '';
       const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true' || statusVal === 'completed' || statusVal === 'verified');
@@ -2520,16 +2525,18 @@ async function exportHostelAsCsv(statusFilter, academicYearFilter, includeInacti
     if (['s', 'slno', 'srno', 'sno', 'serialno', 'serialnumber'].includes(normHeader)) { serialColIndex = h; break; }
   }
 
-  const wantStatus = statusFilter && statusFilter !== 'all' ? statusFilter : null;
+  const wantStatus = statusFilter && statusFilter !== 'all' && statusFilter !== 'active' && statusFilter !== 'inactive' ? statusFilter : null;
   const wantAcademicYear = academicYearFilter && academicYearFilter !== 'all' ? academicYearFilter : null;
+  const excludeInactiveByDefault = statusFilter !== 'all' && statusFilter !== 'inactive' && !includeInactive;
   const rows = [serialColIndex > -1 ? headers : ['Sl. No.', ...headers]];
   let serialCounter = 1;
   for (let r = 1; r < data.length; r++) {
     let row = data[r];
-    if (!includeInactive && col.active > -1) {
-      const activeVal = String(row[col.active] || '').trim().toLowerCase();
-      if (activeVal === 'no') continue;
-    }
+    const activeVal = col.active > -1 ? String(row[col.active] || '').trim().toLowerCase() : '';
+    const isInactive = activeVal === 'no';
+    if (statusFilter === 'active' && isInactive) continue;
+    if (statusFilter === 'inactive' && !isInactive) continue;
+    if (excludeInactiveByDefault && isInactive) continue;
     if (wantStatus) {
       const statusVal = String(row[col.status] || '').trim().toLowerCase();
       const isDone = (statusVal === 'done' || statusVal === 'yes' || statusVal === 'true');
