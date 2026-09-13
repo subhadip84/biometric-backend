@@ -98,14 +98,34 @@ async function ensureSheet(name, headerRow) {
 // activity, leaderboard, online users) each read overlapping ranges - most
 // often the Activity Log - independently on every page load. Without this,
 // a single dashboard refresh alone could fire off half a dozen near-
-// identical reads, quickly hitting Google's per-minute read quota. Any
-// write clears the whole cache, so nothing stale is ever served after a
-// change - this only smooths out redundant reads within a tight window.
+// identical reads, quickly hitting Google's per-minute read quota. A write
+// invalidates only the sheet it actually touched, so nothing stale is ever
+// served after a change to that sheet - reads of other, unrelated sheets
+// keep benefiting from the cache instead of being wiped out too.
 const READ_CACHE_TTL_MS = 30000;
 const readCache = new Map();
 
-function clearReadCache() {
-  readCache.clear();
+// Extracts the sheet name from an A1-notation range string, handling both
+// quoted names (for sheets with spaces, e.g. 'Hostel Students'!A1:B2) and
+// unquoted ones (StudentData!A1:B2). Returns null if the range has no
+// sheet prefix.
+function extractSheetName(rangeA1) {
+  const match = String(rangeA1 || '').match(/^(?:'([^']+)'|([^!]+))!/);
+  if (!match) return null;
+  return match[1] || match[2];
+}
+
+// Invalidates only the cached entries belonging to a specific sheet, rather
+// than the whole cache. A write to the master roster sheet no longer wipes
+// out a still-fresh cached read of the (unrelated) activity log or settings
+// sheet - each sheet's cache lives and dies independently. Passing no
+// sheetName clears everything, for callers that can't determine which
+// sheet(s) were actually affected.
+function clearReadCache(sheetName) {
+  if (!sheetName) { readCache.clear(); return; }
+  for (const key of readCache.keys()) {
+    if (extractSheetName(key) === sheetName) readCache.delete(key);
+  }
 }
 
 // Detects Google API quota/rate-limit errors specifically (HTTP 429, or the
@@ -175,7 +195,7 @@ async function readRange(rangeA1) {
 }
 
 async function writeRange(rangeA1, values) {
-  clearReadCache();
+  clearReadCache(extractSheetName(rangeA1));
   await withQuotaRetry(async () => {
     const sheets = await getSheetsClient();
     await sheets.spreadsheets.values.update({
@@ -193,7 +213,8 @@ async function writeRange(rangeA1, values) {
 // a student verified touches 4-6 cells; bulk operations touch many rows).
 async function batchWriteRanges(updates) {
   if (!updates.length) return;
-  clearReadCache();
+  const affectedSheets = [...new Set(updates.map(u => extractSheetName(u.range)).filter(Boolean))];
+  affectedSheets.forEach(sheet => clearReadCache(sheet));
   await withQuotaRetry(async () => {
     const sheets = await getSheetsClient();
     await sheets.spreadsheets.values.batchUpdate({
@@ -207,7 +228,7 @@ async function batchWriteRanges(updates) {
 }
 
 async function appendRows(sheetName, values) {
-  clearReadCache();
+  clearReadCache(sheetName);
   await withQuotaRetry(async () => {
     const sheets = await getSheetsClient();
     await sheets.spreadsheets.values.append({
@@ -221,7 +242,7 @@ async function appendRows(sheetName, values) {
 }
 
 async function clearRange(rangeA1) {
-  clearReadCache();
+  clearReadCache(extractSheetName(rangeA1));
   await withQuotaRetry(async () => {
     const sheets = await getSheetsClient();
     await sheets.spreadsheets.values.clear({
@@ -241,7 +262,7 @@ async function getSheetIdByName(name) {
 }
 
 async function deleteRow(sheetName, rowNumber1Indexed) {
-  clearReadCache();
+  clearReadCache(sheetName);
   const sheetId = await getSheetIdByName(sheetName);
   await withQuotaRetry(async () => {
     const sheets = await getSheetsClient();
