@@ -752,6 +752,9 @@ async function updateStatus(rowId, status, sessionToken) {
   if (currentLock === 'yes') {
     return { ok: false, error: 'This record is locked. An admin needs to unlock it before it can be changed.' };
   }
+  if (col.active > -1 && String(row[col.active] || '').trim().toLowerCase() === 'no') {
+    return { ok: false, error: 'This student is marked inactive. An admin needs to reactivate this record before it can be changed.' };
+  }
 
   const value = status === 'done' ? 'Done' : 'Not Done';
   const users = usersForRoleCheck;
@@ -869,9 +872,13 @@ async function updateStudentNote(rowId, note, sessionToken) {
   const rowNum = parseInt(String(rowId).replace('row', ''), 10);
   if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid student id.' };
 
+  const row = data[rowNum - 1] || [];
+  if (col.active > -1 && String(row[col.active] || '').trim().toLowerCase() === 'no') {
+    return { ok: false, error: 'This student is marked inactive. An admin needs to reactivate this record before it can be changed.' };
+  }
+
   await sheetsApi.writeRange(`${sheetName}!${colToLetter(col.notes)}${rowNum}`, [[String(note || '').slice(0, 2000)]]);
 
-  const row = data[rowNum - 1] || [];
   const studentName = col.name > -1 ? String(row[col.name] || '') : '';
   await logActivity(actor || 'unknown', 'Updated Note', `${studentName} (row ${rowNum})`);
 
@@ -2222,6 +2229,9 @@ async function updateHostelStatus(rowId, status, sessionToken) {
   if (String(row[col.lock] || '').trim().toLowerCase() === 'yes') {
     return { ok: false, error: 'This record is locked. An admin needs to unlock it before it can be changed.' };
   }
+  if (col.active > -1 && String(row[col.active] || '').trim().toLowerCase() === 'no') {
+    return { ok: false, error: 'This student is marked inactive. An admin needs to reactivate this record before it can be changed.' };
+  }
 
   const value = status === 'done' ? 'Done' : 'Not Done';
   const timestamp = getISTTimestampForStorage();
@@ -2337,9 +2347,13 @@ async function updateHostelStudentNote(rowId, note, sessionToken) {
   const rowNum = parseInt(String(rowId).replace('hrow', ''), 10);
   if (!rowNum || rowNum < 2) return { ok: false, error: 'Invalid record id.' };
 
+  const row = data[rowNum - 1] || [];
+  if (col.active > -1 && String(row[col.active] || '').trim().toLowerCase() === 'no') {
+    return { ok: false, error: 'This student is marked inactive. An admin needs to reactivate this record before it can be changed.' };
+  }
+
   await sheetsApi.writeRange(`${HOSTEL_SHEET_NAME}!${colToLetter(col.notes)}${rowNum}`, [[String(note || '').slice(0, 2000)]]);
 
-  const row = data[rowNum - 1] || [];
   const studentName = col['studentname'] > -1 ? String(row[col['studentname']] || '') : '';
   await logActivity(actor || 'unknown', 'Updated Note', `${studentName} (row ${rowNum})`);
 
