@@ -216,6 +216,12 @@ wss.on('connection', (ws, req) => {
   ws.on('error', () => { /* connection will close and clean itself up */ });
 });
 
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+(async () => {
+  // Restores sessions that were still active before this restart, so
+  // redeploying (or a free-tier spin-down/up) doesn't force everyone
+  // using the app right now to log back in.
+  await core.rehydrateSessionsFromStorage();
+  server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+})();
