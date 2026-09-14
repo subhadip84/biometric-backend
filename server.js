@@ -7,6 +7,8 @@ const cors = require('cors');
 const core = require('./core');
 const cron = require('node-cron');
 const { runDailyBackup } = require('./backup');
+const http = require('http');
+const { WebSocketServer } = require('ws');
 
 // Runs every day at 2:00 AM India time, matching the schedule the original
 // Apps Script version used. node-cron handles the timezone conversion.
@@ -33,6 +35,24 @@ const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 app.use(cors({ origin: ALLOWED_ORIGIN }));
 
 app.use(express.text({ type: '*/*', limit: '50mb' })); // frontend sends text/plain to avoid CORS preflight; 50mb accommodates large bulk imports
+
+// Maps a userId to the set of their currently-open WebSocket connections
+// (a person could have more than one tab/device open). Used so a chat
+// message can be pushed to the recipient the instant it's sent, with no
+// polling delay, if they're currently connected - falls back to the
+// existing polling-based unread badge/conversation list if they're not.
+const chatConnections = new Map();
+
+function pushChatMessageToUser(userId, message){
+  const sockets = chatConnections.get(String(userId));
+  if(!sockets || !sockets.size) return;
+  const payload = JSON.stringify({ type: 'chatMessage', message });
+  sockets.forEach(ws => {
+    if(ws.readyState === ws.OPEN){
+      try{ ws.send(payload); }catch(e){ /* connection likely stale; cleanup happens on close */ }
+    }
+  });
+}
 
 // ---------- Phase 1, 2, and 3 all wired in now ----------
 const API_FUNCTIONS = {
@@ -74,7 +94,11 @@ const API_FUNCTIONS = {
   getUnusualActivityFlags: core.getUnusualActivityFlags,
   parseVoiceCommand: core.parseVoiceCommand,
   getOnlineUsers: core.getOnlineUsers,
-  sendChatMessage: core.sendChatMessage,
+  sendChatMessage: async (toUserId, text, sessionToken) => {
+    const result = await core.sendChatMessage(toUserId, text, sessionToken);
+    if(result.ok) pushChatMessageToUser(toUserId, result.message);
+    return result;
+  },
   getChatMessages: core.getChatMessages,
   getChatConversations: core.getChatConversations,
   getStaffLeaderboard: core.getStaffLeaderboard,
@@ -160,6 +184,38 @@ app.use((err, req, res, next) => {
   res.status(500).json({ ok: false, error: 'Unexpected server error: ' + (err && err.message ? err.message : String(err)) });
 });
 
-app.listen(PORT, () => {
+const server = http.createServer(app);
+
+// WebSocket server for instant chat delivery, on its own path so it never
+// interferes with the existing POST '/' dispatcher the rest of the app uses.
+const wss = new WebSocketServer({ server, path: '/ws' });
+
+wss.on('connection', (ws, req) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const token = url.searchParams.get('token');
+  const session = token ? core.validateSessionToken(token) : null;
+  if(!session){
+    ws.close(4001, 'Invalid or expired session');
+    return;
+  }
+  const userId = session.userId;
+  if(!chatConnections.has(userId)) chatConnections.set(userId, new Set());
+  chatConnections.get(userId).add(ws);
+
+  ws.on('close', () => {
+    const sockets = chatConnections.get(userId);
+    if(sockets){
+      sockets.delete(ws);
+      if(!sockets.size) chatConnections.delete(userId);
+    }
+  });
+
+  // Clients don't need to send anything after connecting - this is push-only
+  // from the server's side - but errors on an idle socket should still be
+  // handled rather than crashing the process.
+  ws.on('error', () => { /* connection will close and clean itself up */ });
+});
+
+server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
