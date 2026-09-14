@@ -1788,11 +1788,108 @@ async function publicLookupHostelStudent(identifier) {
 async function getOnlineUsers() {
   const sessions = await getSetting(ACTIVE_SESSIONS_KEY, {});
   const cutoff = Date.now() - HEARTBEAT_STALE_MINUTES * 60 * 1000;
-  const online = Object.values(sessions)
-    .filter(s => s.lastHeartbeat >= cutoff)
-    .map(s => ({ actorName: s.actorName, loginTime: s.loginTime, lastHeartbeat: s.lastHeartbeat, ip: s.ip || '' }))
+  const online = Object.keys(sessions)
+    .filter(userId => sessions[userId].lastHeartbeat >= cutoff)
+    .map(userId => ({ userId, actorName: sessions[userId].actorName, loginTime: sessions[userId].loginTime, lastHeartbeat: sessions[userId].lastHeartbeat, ip: sessions[userId].ip || '' }))
     .sort((a, b) => b.loginTime - a.loginTime);
   return { ok: true, users: online };
+}
+
+// ---------- Admin/staff direct chat ----------
+// Messages for a given pair of users live under one deterministic settings
+// key (sorted userIds, so it resolves the same regardless of who's asking).
+// Each user also has a lightweight "conversations" index - who they've
+// talked to, when, and how many unread messages are waiting - so the
+// unread badge doesn't need to scan every possible conversation.
+const CHAT_MAX_MESSAGES_PER_CONVERSATION = 200;
+
+function chatConversationKey(userIdA, userIdB) {
+  const sorted = [String(userIdA), String(userIdB)].sort();
+  return `chatMsgs_${sorted[0]}_${sorted[1]}`;
+}
+
+function chatConversationsIndexKey(userId) {
+  return `chatConversations_${userId}`;
+}
+
+async function sendChatMessage(toUserId, text, sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const trimmedText = String(text || '').trim().slice(0, 2000);
+  if (!trimmedText) return { ok: false, error: 'Message cannot be empty.' };
+
+  const users = await getAllUsers();
+  const fromUser = users[session.userId];
+  const toUser = users[toUserId];
+  if (!fromUser) return { ok: false, error: 'Your account could not be found.' };
+  if (!toUser) return { ok: false, error: 'That user could not be found.' };
+  if (String(toUserId) === session.userId) return { ok: false, error: "You can't message yourself." };
+
+  const convoKey = chatConversationKey(session.userId, toUserId);
+  const messages = await getSetting(convoKey, []);
+  const message = {
+    from: session.userId,
+    fromName: fromUser.name || session.userId,
+    text: trimmedText,
+    at: Date.now()
+  };
+  messages.push(message);
+  if (messages.length > CHAT_MAX_MESSAGES_PER_CONVERSATION) {
+    messages.splice(0, messages.length - CHAT_MAX_MESSAGES_PER_CONVERSATION);
+  }
+  await setSetting(convoKey, messages);
+
+  // Update both sides' conversation index - the sender's entry has no
+  // unread bump (they just read what they wrote); the recipient's does.
+  const senderIndex = await getSetting(chatConversationsIndexKey(session.userId), {});
+  senderIndex[toUserId] = {
+    otherUserId: toUserId,
+    otherName: toUser.name || toUserId,
+    lastMessage: trimmedText,
+    lastMessageAt: message.at,
+    lastMessageFrom: session.userId,
+    unreadCount: 0
+  };
+  await setSetting(chatConversationsIndexKey(session.userId), senderIndex);
+
+  const recipientIndex = await getSetting(chatConversationsIndexKey(toUserId), {});
+  const existingRecipientEntry = recipientIndex[session.userId];
+  recipientIndex[session.userId] = {
+    otherUserId: session.userId,
+    otherName: fromUser.name || session.userId,
+    lastMessage: trimmedText,
+    lastMessageAt: message.at,
+    lastMessageFrom: session.userId,
+    unreadCount: ((existingRecipientEntry && existingRecipientEntry.unreadCount) || 0) + 1
+  };
+  await setSetting(chatConversationsIndexKey(toUserId), recipientIndex);
+
+  return { ok: true, message };
+}
+
+async function getChatMessages(otherUserId, sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+
+  const convoKey = chatConversationKey(session.userId, otherUserId);
+  const messages = await getSetting(convoKey, []);
+
+  // Opening the conversation marks it read - reset this user's unread count.
+  const myIndex = await getSetting(chatConversationsIndexKey(session.userId), {});
+  if (myIndex[otherUserId] && myIndex[otherUserId].unreadCount > 0) {
+    myIndex[otherUserId].unreadCount = 0;
+    await setSetting(chatConversationsIndexKey(session.userId), myIndex);
+  }
+
+  return { ok: true, messages };
+}
+
+async function getChatConversations(sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const index = await getSetting(chatConversationsIndexKey(session.userId), {});
+  const conversations = Object.values(index).sort((a, b) => b.lastMessageAt - a.lastMessageAt);
+  return { ok: true, conversations };
 }
 
 async function getStaffLeaderboard() {
@@ -3492,6 +3589,7 @@ module.exports = {
   getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, updateHostelStudentDetails, setHostelStudentActiveStatus, bulkSetHostelActiveStatus, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv, exportHostelVerifiedLastDayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, importHostelInactiveList, getLastHostelImportInfo,
   askAiHelpAssistant, getHelpFaqList, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
+  sendChatMessage, getChatMessages, getChatConversations,
   getStaffLeaderboard, getLoginDigest, undoRecentVerification, undoRecentHostelVerification,
   publicLookupStudent, publicLookupHostelStudent,
   requestContext,
