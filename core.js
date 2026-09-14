@@ -536,15 +536,37 @@ function recordFailedLogin(key) {
 // string as proof of identity. A real, unguessable token is issued once at
 // login and must be presented on every subsequent action; the server
 // looks up who that token actually belongs to rather than trusting
-// whatever identity a request claims. In-memory (resets on server
-// restart, an accepted trade-off - a restart simply requires everyone to
-// log in again, same as today).
-const activeSessions = {}; // token -> { userId, role, name, expiresAt }
+// whatever identity a request claims. Kept in memory for fast, synchronous
+// validation on every request, and also persisted to Sheets (throttled -
+// see SESSION_PERSIST_THROTTLE_MS below) so a server restart doesn't force
+// everyone still actively using the app to log back in; see
+// rehydrateSessionsFromStorage(), called once at server startup.
+const activeSessions = {}; // token -> { userId, role, name, expiresAt, lastPersistedAt }
 const SESSION_DURATION_MS = 30 * 60 * 1000; // matches the frontend's existing 30-minute inactivity timeout
+const AUTH_SESSIONS_KEY = 'authSessions';
+// How often a still-active session's extended expiry gets written back to
+// Sheets. Every single validateSessionToken() call extends the in-memory
+// expiry (cheap, synchronous) - persisting that on every one of those
+// (which happens on nearly every authenticated request) would be far too
+// expensive against the shared read/write quota. Throttling to once per
+// window keeps a restart-recovered session's expiry only mildly stale,
+// while keeping normal request traffic just as fast as it always was.
+const SESSION_PERSIST_THROTTLE_MS = 5 * 60 * 1000;
 
-function generateSessionToken(userId, role, name) {
+async function generateSessionToken(userId, role, name) {
   const token = crypto.randomBytes(32).toString('hex');
-  activeSessions[token] = { userId, role, name, expiresAt: Date.now() + SESSION_DURATION_MS };
+  const session = { userId, role, name, expiresAt: Date.now() + SESSION_DURATION_MS, lastPersistedAt: Date.now() };
+  activeSessions[token] = session;
+  try {
+    const stored = await getSetting(AUTH_SESSIONS_KEY, {});
+    stored[token] = { userId, role, name, expiresAt: session.expiresAt };
+    await setSetting(AUTH_SESSIONS_KEY, stored);
+  } catch (e) {
+    // Login itself already succeeded (the in-memory session is live) -
+    // a persistence hiccup here shouldn't fail the login the user is
+    // actively waiting on. Worst case if this genuinely failed: the
+    // session just won't survive a restart, same as before this feature.
+  }
   return token;
 }
 
@@ -552,20 +574,67 @@ function generateSessionToken(userId, role, name) {
 // an actively-used session stays valid indefinitely; one left untouched
 // expires after the same 30 minutes the frontend already treats as
 // inactive. Returns the session's real identity, or null if the token is
-// missing, unrecognized, or expired.
+// missing, unrecognized, or expired. Deliberately stays synchronous -
+// it's called throughout this file assuming an immediate return, and
+// persistence of the extended expiry happens in the background (fired,
+// not awaited) so none of those call sites need to change.
 function validateSessionToken(token) {
-  const session = activeSessions[String(token || '')];
+  const key = String(token || '');
+  const session = activeSessions[key];
   if (!session) return null;
   if (Date.now() > session.expiresAt) {
-    delete activeSessions[token];
+    delete activeSessions[key];
     return null;
   }
   session.expiresAt = Date.now() + SESSION_DURATION_MS;
+  if (Date.now() - (session.lastPersistedAt || 0) > SESSION_PERSIST_THROTTLE_MS) {
+    session.lastPersistedAt = Date.now();
+    getSetting(AUTH_SESSIONS_KEY, {})
+      .then(stored => {
+        if (!stored[key]) return; // logged out / removed elsewhere since this fired
+        stored[key].expiresAt = session.expiresAt;
+        return setSetting(AUTH_SESSIONS_KEY, stored);
+      })
+      .catch(() => { /* next throttle window will retry */ });
+  }
   return session;
 }
 
-function invalidateSessionToken(token) {
-  delete activeSessions[String(token || '')];
+async function invalidateSessionToken(token) {
+  const key = String(token || '');
+  delete activeSessions[key];
+  try {
+    const stored = await getSetting(AUTH_SESSIONS_KEY, {});
+    if (stored[key]) {
+      delete stored[key];
+      await setSetting(AUTH_SESSIONS_KEY, stored);
+    }
+  } catch (e) {
+    // Non-fatal - an orphaned persisted entry just expires on its own
+    // per its stored expiresAt, the same as any other session would.
+  }
+}
+
+// Called once at server startup, before the server accepts any requests -
+// repopulates the in-memory session store from what was persisted before
+// the restart, so a session that was genuinely still active a moment ago
+// keeps working without forcing everyone to log in again.
+async function rehydrateSessionsFromStorage() {
+  try {
+    const stored = await getSetting(AUTH_SESSIONS_KEY, {});
+    const now = Date.now();
+    let restored = 0;
+    Object.keys(stored).forEach(token => {
+      const s = stored[token];
+      if (s && s.expiresAt > now) {
+        activeSessions[token] = { userId: s.userId, role: s.role, name: s.name, expiresAt: s.expiresAt, lastPersistedAt: now };
+        restored++;
+      }
+    });
+    console.log(`Rehydrated ${restored} active session(s) from storage.`);
+  } catch (e) {
+    console.error('Could not rehydrate sessions from storage (starting with an empty session store):', e.message);
+  }
 }
 
 // Periodic sweep for sessions nobody explicitly logged out of (browser
@@ -610,7 +679,7 @@ async function checkLogin(userId, password, deviceInfo) {
     await writeAllUsers(users);
   }
 
-  const sessionToken = generateSessionToken(key, users[key].role, displayName);
+  const sessionToken = await generateSessionToken(key, users[key].role, displayName);
 
   return {
     ok: true,
@@ -629,7 +698,7 @@ async function checkLogin(userId, password, deviceInfo) {
 // Explicitly invalidates a session token server-side at logout, rather
 // than relying solely on it eventually expiring on its own.
 async function logoutSession(token) {
-  invalidateSessionToken(token);
+  await invalidateSessionToken(token);
   return { ok: true };
 }
 
@@ -3575,7 +3644,7 @@ module.exports = {
   getAllUsers, writeAllUsers, effectivePermissions, capitalizeFirst, ALL_PERMISSION_KEYS,
   getAdminPassword, setAdminPassword,
   logActivity, getActivityLog,
-  checkLogin, logoutSession, validateSessionToken, getStudents, updateStatus, adminUnlock,
+  checkLogin, logoutSession, validateSessionToken, rehydrateSessionsFromStorage, getStudents, updateStatus, adminUnlock,
   checkUserIdAvailability, checkContactAvailability,
   createUser, deleteUser, updateUserDetails, getUserList,
   changeOwnPassword, adminResetPassword, changeAdminPassword,
