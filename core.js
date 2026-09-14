@@ -2800,17 +2800,149 @@ async function importHostelInactiveList(uploadedHeaders, uploadedRows, adminPass
 
 // ---------- AI-powered Help Assistant ----------
 
-const HELP_ASSISTANT_SYSTEM_PROMPT = `You are the in-app Help Assistant for "Biometric Verification Desk", an internal tool for Adamas University IT staff (AKC IT Support) tracking student biometric verification and hostel face-capture verification.
+// ============================================================
+// SINGLE SOURCE OF TRUTH for in-app help. Every entry here drives
+// THREE things at once: the AI Help Assistant's knowledge, and the
+// static/instant FAQ list shown in both the main app and the hostel
+// page. Add, edit, or remove a feature here ONLY - never hand-edit
+// a help prompt or FAQ list anywhere else. If a genuinely new
+// feature is added to this app, add one entry here and every part
+// of in-app help picks it up automatically, in both apps, with no
+// other file to touch.
+//
+// appliesTo: 'both' | 'main' | 'hostel' - which app(s) this exists in
+// requiresPerm: null (everyone) | 'admin' (strict admin role only,
+//   not demo) | a permission key matching the app's own perms object
+//   (e.g. 'deleteStudent', 'unlockRecords') - granted per-account
+// ============================================================
+const APP_FEATURE_REGISTRY = [
+  { id: 'search', appliesTo: 'both', requiresPerm: null,
+    keywords: ['search', 'find student', 'look up'],
+    question: 'How do I search for a student?',
+    answer: 'Use the search box — type any part of the Application/Roll No, Registration Number, Machine Code, or Name, then press Enter or click Search.' },
+  { id: 'verify', appliesTo: 'both', requiresPerm: null,
+    keywords: ['verify', 'mark done', 'mark pending', 'biometric done', 'face capture done', 'status'],
+    question: 'How do I mark a student verified?',
+    answer: 'Open the student\'s detail card, then choose "Done" (or "Biometric done") or "Not done yet" under the verification controls. It saves automatically and locks the record.' },
+  { id: 'locked', appliesTo: 'both', requiresPerm: null,
+    keywords: ['locked', 'lock mean'],
+    question: 'What does "locked" mean?',
+    answer: 'Once a student is marked, the record locks to prevent accidental changes. An admin with the right permission can unlock it if a correction is needed.' },
+  { id: 'unlock', appliesTo: 'both', requiresPerm: 'unlockRecords',
+    keywords: ['unlock'],
+    question: 'How do I unlock a record?',
+    answer: 'Open the student\'s detail card, click "Unlock (admin)", then enter the admin password in the popup that appears.' },
+  { id: 'undo', appliesTo: 'both', requiresPerm: 'allowUndo',
+    keywords: ['undo', 'accidentally verified', 'undo verification'],
+    question: 'How do I undo a verification I just did?',
+    answer: 'Right after verifying someone, a toast notification appears with an "Undo" link for a short window — click it to reverse that specific action.' },
+  { id: 'inactive', appliesTo: 'both', requiresPerm: 'admin',
+    keywords: ['inactive', 'mark inactive', 'withdrawn', 'graduated', 'transferred', 'deactivate'],
+    question: 'How do I mark a student inactive?',
+    answer: 'Open the student\'s detail card and click "Mark Inactive" (for students who withdrew, graduated, or transferred). Inactive students are hidden from the default roster and excluded from pending counts, but nothing is deleted — click "Mark Active" any time to bring them back. Admins can also select multiple students and use "Mark Inactive" in the bulk action bar, or upload a list via Welcome menu → Import Inactive List.' },
+  { id: 'editDetails', appliesTo: 'both', requiresPerm: 'admin',
+    keywords: ['edit student', 'correct student', 'fix name', 'edit details', 'change reg no', 'change app no'],
+    question: 'How do I fix a typo in a student\'s name or number?',
+    answer: 'Open the student\'s detail card and click "Edit Student Details" (admin only). You can correct the name, App No, Reg No, Machine Code, Site Code, and similar fields — every change is logged with the old and new value.' },
+  { id: 'deleteStudent', appliesTo: 'both', requiresPerm: 'deleteStudent',
+    keywords: ['delete student', 'remove student'],
+    question: 'How do I delete a student record?',
+    answer: 'Open their detail card → Delete Student → confirm, then enter the admin password. This permanently removes the row — if you just want to stop tracking someone without deleting their history, use "Mark Inactive" instead.' },
+  { id: 'importStudents', appliesTo: 'main', requiresPerm: 'importStudents',
+    keywords: ['import new student', 'add new student', 'new registration'],
+    question: 'How do I import new students?',
+    answer: 'Welcome menu → Import New Students → upload your Excel/CSV file → review the preview → confirm with the admin password.' },
+  { id: 'importNewHostel', appliesTo: 'hostel', requiresPerm: 'importStudents',
+    keywords: ['import new hostel', 'add hostel student', 'new hostel registration'],
+    question: 'How do I import new hostel students?',
+    answer: 'Welcome menu → Import New Hostel Data → upload your file → review the preview → confirm with the admin password.' },
+  { id: 'importVerification', appliesTo: 'main', requiresPerm: 'importVerification',
+    keywords: ['import verification', 'machine report', 'bulk verify'],
+    question: 'How do I import verification updates?',
+    answer: 'Welcome menu → Import Verification Updates → upload the biometric machine\'s report. Matching students get marked Done automatically.' },
+  { id: 'importFaceCapture', appliesTo: 'hostel', requiresPerm: 'importVerification',
+    keywords: ['import face capture', 'hostel machine report'],
+    question: 'How do I import face capture updates?',
+    answer: 'Welcome menu → Import Face Capture Updates → upload the machine\'s report. Matching hostel students get marked Done automatically.' },
+  { id: 'importInactive', appliesTo: 'both', requiresPerm: 'admin',
+    keywords: ['import inactive', 'bulk inactive', 'inactive list', 'upload inactive'],
+    question: 'How do I mark many students inactive at once?',
+    answer: 'Welcome menu → Import Inactive List → upload a file with the students\' Reg No or App No → confirm with the admin password. Matching students are marked Inactive in bulk.' },
+  { id: 'downloadCsv', appliesTo: 'both', requiresPerm: 'downloadCsv',
+    keywords: ['download roster', 'export csv', 'csv', 'download report'],
+    question: 'How do I download the roster as CSV?',
+    answer: 'Welcome menu → Download Roster/Report (CSV) → choose your filters (Verified, Pending, Active, Inactive, or All) → Download.' },
+  { id: 'customReport', appliesTo: 'both', requiresPerm: null,
+    keywords: ['custom report', 'build a report', 'report by site', 'report by year'],
+    question: 'How do I build a custom report?',
+    answer: 'Welcome menu → Custom Report → pick your filters (status, site, academic year) and grouping → Generate.' },
+  { id: 'manageUsers', appliesTo: 'main', requiresPerm: 'manageUsers',
+    keywords: ['create user', 'new account', 'manage user'],
+    question: 'How do I create a new user?',
+    answer: 'Welcome menu → Manage Users → fill in the Add New User form → choose manual or auto-generated password → Create User (you\'ll be asked for the admin password in a popup).' },
+  { id: 'resetPassword', appliesTo: 'main', requiresPerm: 'resetPasswords',
+    keywords: ['reset password', "someone's password", 'forgot password'],
+    question: "How do I reset someone's password?",
+    answer: 'Welcome menu → Reset User Password → pick their account → enter a new password → confirm with the admin password.' },
+  { id: 'ownPassword', appliesTo: 'both', requiresPerm: null,
+    keywords: ['change my password', 'my password', 'own password'],
+    question: 'How do I change my own password?',
+    answer: 'Open the "Welcome, ___" menu (top right) and click "Change Password."' },
+  { id: 'composeMessage', appliesTo: 'main', requiresPerm: 'composeMessage',
+    keywords: ['send message', 'broadcast', 'announcement', 'compose message'],
+    question: 'How do I send a message to staff?',
+    answer: 'Welcome menu → Compose Message → write your message → pick a style → Publish.' },
+  { id: 'activityLog', appliesTo: 'both', requiresPerm: 'viewActivityLog',
+    keywords: ['activity log', 'recent activity', 'audit'],
+    question: 'How can I see recent activity?',
+    answer: 'Welcome menu → Activity Log shows everyone\'s actions with timestamps.' },
+  { id: 'hostelHouseIcon', appliesTo: 'hostel', requiresPerm: null,
+    keywords: ['house', 'symbol', '🏠'],
+    question: 'What does the 🏠 symbol mean?',
+    answer: 'It means this student was verified by a hosteller-only staff account, rather than an admin.' },
+  { id: 'overturnedIcon', appliesTo: 'both', requiresPerm: null,
+    keywords: ['warning', 'triangle', '⚠', 'overturned'],
+    question: 'What does the ⚠️ symbol mean?',
+    answer: 'It means this record was unlocked and changed again by an admin after its first verification — an overturn or correction.' },
+  { id: 'demoAccount', appliesTo: 'both', requiresPerm: null,
+    keywords: ['demo account', 'what is demo'],
+    question: 'What is a Demo account?',
+    answer: 'Demo accounts have full admin-like visibility but are hard-restricted from verifying, deleting, or marking students inactive — used for showing the app without risking real data.' },
+  { id: 'hostelAccess', appliesTo: 'both', requiresPerm: null,
+    keywords: ['hostel access', 'hosteller only', 'hostel data access'],
+    question: 'What is "Hostel Data Access"?',
+    answer: 'A staff account can be individually granted just Hostel Data Access — letting them use the Hostel Lookup page without being an admin.' },
+  { id: 'contact', appliesTo: 'both', requiresPerm: null,
+    keywords: ['contact', 'support', 'help desk'],
+    question: 'Who do I contact for help?',
+    answer: 'Contact AKC IT Support (Adamas Tech Consulting) for anything this assistant can\'t answer.' }
+];
 
-Key things staff and admins can do:
-- Search for a student by App No, Reg No, Machine Code, or name; mark them Verified or Pending
-- Once verified, a record locks - only an Admin can unlock it (enter admin password) before changing it again
-- Admins can: bulk import new students, bulk import verification updates from a file, download CSV reports (filtered by Verified/Pending/All), manage user accounts and permissions, view the Activity Log, download a PDF of the activity log for a date range
-- There's a separate "Hostel Lookup" page for Face Capture verification of hostel students, working the same way but with its own roster
-- "Demo" accounts have full admin-like access but cannot verify/delete anything (hard-restricted)
-- Staff accounts can be individually granted just "Hostel Data Access" without becoming admin
+// Builds the FAQ list for a given context (which app, and the caller's
+// permissions), by filtering the single registry above.
+function getHelpFaqRegistry(appContext, isAdmin, isDemo, perms) {
+  const effectiveIsAdmin = isAdmin && !isDemo;
+  return APP_FEATURE_REGISTRY.filter(item => {
+    if (item.appliesTo !== 'both' && item.appliesTo !== appContext) return false;
+    if (item.requiresPerm === null) return true;
+    if (item.requiresPerm === 'admin') return effectiveIsAdmin;
+    return !!(perms && perms[item.requiresPerm]);
+  }).map(item => ({ keywords: item.keywords, question: item.question, answer: item.answer }));
+}
+
+// Builds the AI Help Assistant's system prompt dynamically from the same
+// registry, so its knowledge never drifts out of sync with the FAQ lists.
+function buildHelpAssistantSystemPrompt() {
+  const featureLines = APP_FEATURE_REGISTRY
+    .map(item => `- ${item.question} ${item.answer}`)
+    .join('\n');
+  return `You are the in-app Help Assistant for "Biometric Verification Desk", an internal tool for Adamas University IT staff (AKC IT Support) tracking student biometric verification and hostel face-capture verification. There's a separate "Hostel Lookup" page for hostel students, working the same way but with its own roster.
+
+Here is everything the app can currently do - use this as your source of truth, don't guess:
+${featureLines}
 
 Answer questions clearly and concisely, in plain language, focused on how to actually do the thing they're asking about. If a question is about something outside this app's scope, say so briefly and suggest contacting AKC IT Support. Keep answers short - a few sentences at most, this is a small in-app chat widget, not a long document.`;
+}
 
 const ALLOWED_HELP_CHAT_EVENTS = ['Started New Chat', 'Ended Chat'];
 async function logHelpChatEvent(actor, eventType) {
@@ -2869,6 +3001,19 @@ async function parseVoiceCommand(spokenText) {
   }
 }
 
+async function getHelpFaqList(sessionToken, appContext) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  const user = users[session.userId];
+  if (!user) return { ok: false, error: 'Account not found.' };
+  const isAdmin = user.role === 'admin' || user.role === 'demo';
+  const isDemo = user.role === 'demo';
+  const perms = effectivePermissions(user);
+  const list = getHelpFaqRegistry(appContext === 'hostel' ? 'hostel' : 'main', isAdmin, isDemo, perms);
+  return { ok: true, list };
+}
+
 async function askAiHelpAssistant(question) {
   const apiKey = (process.env.GROQ_API_KEY || '').trim();
   if (!apiKey) {
@@ -2886,7 +3031,7 @@ async function askAiHelpAssistant(question) {
         max_tokens: 700,
         reasoning_effort: 'low',
         messages: [
-          { role: 'system', content: HELP_ASSISTANT_SYSTEM_PROMPT },
+          { role: 'system', content: buildHelpAssistantSystemPrompt() },
           { role: 'user', content: String(question || '').slice(0, 500) }
         ]
       })
@@ -3346,7 +3491,7 @@ module.exports = {
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
   getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, updateHostelStudentDetails, setHostelStudentActiveStatus, bulkSetHostelActiveStatus, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv, exportHostelVerifiedLastDayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, importHostelInactiveList, getLastHostelImportInfo,
-  askAiHelpAssistant, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
+  askAiHelpAssistant, getHelpFaqList, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
   getStaffLeaderboard, getLoginDigest, undoRecentVerification, undoRecentHostelVerification,
   publicLookupStudent, publicLookupHostelStudent,
   requestContext,
