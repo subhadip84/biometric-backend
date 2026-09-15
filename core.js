@@ -1881,6 +1881,15 @@ function chatConversationsIndexKey(userId) {
   return `chatConversations_${userId}`;
 }
 
+// Tracks, per conversation, when each of the two participants last read it -
+// {userId: timestamp}. A message is "seen" (double blue tick) once its own
+// timestamp is at or before the recipient's lastReadAt; anything after that
+// is "delivered but not yet read" (single tick).
+function chatReadReceiptsKey(userIdA, userIdB) {
+  const sorted = [String(userIdA), String(userIdB)].sort();
+  return `chatRead_${sorted[0]}_${sorted[1]}`;
+}
+
 async function sendChatMessage(toUserId, text, sessionToken) {
   const session = validateSessionToken(sessionToken);
   if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
@@ -1943,14 +1952,22 @@ async function getChatMessages(otherUserId, sessionToken) {
   const convoKey = chatConversationKey(session.userId, otherUserId);
   const messages = await getSetting(convoKey, []);
 
-  // Opening the conversation marks it read - reset this user's unread count.
+  const readKey = chatReadReceiptsKey(session.userId, otherUserId);
+  const readReceipts = await getSetting(readKey, {});
+  let didMarkRead = false;
+
+  // Opening the conversation marks it read - reset this user's unread count,
+  // and record that they've now read up to this moment.
   const myIndex = await getSetting(chatConversationsIndexKey(session.userId), {});
   if (myIndex[otherUserId] && myIndex[otherUserId].unreadCount > 0) {
     myIndex[otherUserId].unreadCount = 0;
     await setSetting(chatConversationsIndexKey(session.userId), myIndex);
+    readReceipts[session.userId] = Date.now();
+    await setSetting(readKey, readReceipts);
+    didMarkRead = true;
   }
 
-  return { ok: true, messages };
+  return { ok: true, messages, otherPersonLastReadAt: readReceipts[otherUserId] || 0, didMarkRead };
 }
 
 async function getChatConversations(sessionToken) {
