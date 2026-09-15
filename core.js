@@ -1660,6 +1660,31 @@ async function setSetting(key, value) {
   }
 }
 
+// Sets several settings keys in as few Sheets API calls as possible - one
+// read of the whole sheet, one batched write for keys that already exist,
+// one append for keys that don't - instead of a full read-then-write cycle
+// per key. Built for call sites (like chat) that update several related
+// keys in a single user-facing action, where each extra sequential round
+// trip is directly felt as delay before anything shows up on screen.
+async function setMultipleSettings(updates) {
+  if (!updates.length) return;
+  await sheetsApi.ensureSheet(SETTINGS_SHEET_NAME, ['Key', 'Value']);
+  const rows = await sheetsApi.readRange(`${SETTINGS_SHEET_NAME}!A2:B`);
+  const writeBatch = [];
+  const appendBatch = [];
+  updates.forEach(({ key, value }) => {
+    const idx = rows.findIndex(r => r[0] === key);
+    const jsonVal = JSON.stringify(value);
+    if (idx === -1) {
+      appendBatch.push([key, jsonVal]);
+    } else {
+      writeBatch.push({ range: `${SETTINGS_SHEET_NAME}!A${idx + 2}:B${idx + 2}`, values: [[key, jsonVal]] });
+    }
+  });
+  if (writeBatch.length) await sheetsApi.batchWriteRanges(writeBatch);
+  if (appendBatch.length) await sheetsApi.appendRows(SETTINGS_SHEET_NAME, appendBatch);
+}
+
 // ---------- Announcements ----------
 
 async function getAnnouncements() {
@@ -1895,16 +1920,28 @@ async function sendChatMessage(toUserId, text, sessionToken) {
   if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
   const trimmedText = String(text || '').trim().slice(0, 2000);
   if (!trimmedText) return { ok: false, error: 'Message cannot be empty.' };
+  if (String(toUserId) === session.userId) return { ok: false, error: "You can't message yourself." };
 
-  const users = await getAllUsers();
+  const convoKey = chatConversationKey(session.userId, toUserId);
+  const senderIndexKey = chatConversationsIndexKey(session.userId);
+  const recipientIndexKey = chatConversationsIndexKey(toUserId);
+
+  // These four reads are mutually independent - none needs another's
+  // result - so they run concurrently instead of one after another. The
+  // three settings reads also share Sheets' own read-deduplication for an
+  // identical in-flight range, so this costs far less than 4x a single read.
+  const [users, messages, senderIndex, recipientIndex] = await Promise.all([
+    getAllUsers(),
+    getSetting(convoKey, []),
+    getSetting(senderIndexKey, {}),
+    getSetting(recipientIndexKey, {})
+  ]);
+
   const fromUser = users[session.userId];
   const toUser = users[toUserId];
   if (!fromUser) return { ok: false, error: 'Your account could not be found.' };
   if (!toUser) return { ok: false, error: 'That user could not be found.' };
-  if (String(toUserId) === session.userId) return { ok: false, error: "You can't message yourself." };
 
-  const convoKey = chatConversationKey(session.userId, toUserId);
-  const messages = await getSetting(convoKey, []);
   const message = {
     from: session.userId,
     fromName: fromUser.name || session.userId,
@@ -1915,11 +1952,9 @@ async function sendChatMessage(toUserId, text, sessionToken) {
   if (messages.length > CHAT_MAX_MESSAGES_PER_CONVERSATION) {
     messages.splice(0, messages.length - CHAT_MAX_MESSAGES_PER_CONVERSATION);
   }
-  await setSetting(convoKey, messages);
 
   // Update both sides' conversation index - the sender's entry has no
   // unread bump (they just read what they wrote); the recipient's does.
-  const senderIndex = await getSetting(chatConversationsIndexKey(session.userId), {});
   senderIndex[toUserId] = {
     otherUserId: toUserId,
     otherName: toUser.name || toUserId,
@@ -1928,9 +1963,6 @@ async function sendChatMessage(toUserId, text, sessionToken) {
     lastMessageFrom: session.userId,
     unreadCount: 0
   };
-  await setSetting(chatConversationsIndexKey(session.userId), senderIndex);
-
-  const recipientIndex = await getSetting(chatConversationsIndexKey(toUserId), {});
   const existingRecipientEntry = recipientIndex[session.userId];
   recipientIndex[session.userId] = {
     otherUserId: session.userId,
@@ -1940,7 +1972,12 @@ async function sendChatMessage(toUserId, text, sessionToken) {
     lastMessageFrom: session.userId,
     unreadCount: ((existingRecipientEntry && existingRecipientEntry.unreadCount) || 0) + 1
   };
-  await setSetting(chatConversationsIndexKey(toUserId), recipientIndex);
+
+  await setMultipleSettings([
+    { key: convoKey, value: messages },
+    { key: senderIndexKey, value: senderIndex },
+    { key: recipientIndexKey, value: recipientIndex }
+  ]);
 
   return { ok: true, message };
 }
