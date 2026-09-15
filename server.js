@@ -202,6 +202,18 @@ wss.on('connection', (ws, req) => {
   if(!chatConnections.has(userId)) chatConnections.set(userId, new Set());
   chatConnections.get(userId).add(ws);
 
+  // Heartbeat: a network intermediary (proxy, load balancer) can silently
+  // drop an idle connection without either side's normal close/error events
+  // firing - it looks perfectly "open" on both ends while actually being
+  // dead, which is exactly what would make a push fail invisibly and fall
+  // all the way back to the slow poll. isAlive gets reset to true only when
+  // a pong is actually received; if a connection didn't answer the previous
+  // ping by the time the next one is due, it's genuinely gone and gets
+  // dropped immediately, so a real reconnect (and real delivery) can happen
+  // right away instead of the client believing a dead connection is fine.
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+
   ws.on('close', () => {
     const sockets = chatConnections.get(userId);
     if(sockets){
@@ -210,11 +222,37 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  // Clients don't need to send anything after connecting - this is push-only
-  // from the server's side - but errors on an idle socket should still be
-  // handled rather than crashing the process.
+  // The client can send small signals of its own now (currently just
+  // "typing"), relayed straight to the other person's live connection if
+  // they have one - this never touches Sheets, since a typing indicator is
+  // purely ephemeral and has no reason to be persisted or polled for.
+  ws.on('message', (data) => {
+    let parsed;
+    try{ parsed = JSON.parse(data.toString()); }catch(e){ return; }
+    if(parsed && parsed.type === 'typing' && parsed.to){
+      const sockets = chatConnections.get(String(parsed.to));
+      if(!sockets) return;
+      const payload = JSON.stringify({ type: 'typing', from: userId });
+      sockets.forEach(recipientWs => {
+        if(recipientWs.readyState === recipientWs.OPEN){
+          try{ recipientWs.send(payload); }catch(e){ /* stale connection; heartbeat will clean it up */ }
+        }
+      });
+    }
+  });
+
   ws.on('error', () => { /* connection will close and clean itself up */ });
 });
+
+// Runs the ping/pong check across every connected client on a fixed
+// interval - independent of any individual connection's own state.
+setInterval(() => {
+  wss.clients.forEach(ws => {
+    if(ws.isAlive === false) return ws.terminate();
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 25000);
 
 (async () => {
   // Restores sessions that were still active before this restart, so
