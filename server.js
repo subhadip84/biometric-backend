@@ -105,6 +105,7 @@ const API_FUNCTIONS = {
   getUnusualActivityFlags: core.getUnusualActivityFlags,
   parseVoiceCommand: core.parseVoiceCommand,
   getOnlineUsers: core.getOnlineUsers,
+  clearAllOnlinePresence: core.clearAllOnlinePresence,
   sendChatMessage: async (toUserId, text, sessionToken) => {
     const result = await core.sendChatMessage(toUserId, text, sessionToken);
     if(result.ok) pushChatMessageToUser(toUserId, result.message);
