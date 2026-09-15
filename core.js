@@ -1791,7 +1791,8 @@ async function logSessionEnd(actor, durationText, sessionToken) {
 // entry anyway, rather than leaving that session's end silently unrecorded.
 
 const ACTIVE_SESSIONS_KEY = 'activeSessions';
-const HEARTBEAT_STALE_MINUTES = 10; // no heartbeat for this long = presumed unexpectedly closed
+const HEARTBEAT_STALE_MINUTES = 10; // no heartbeat for this long = shown as "idle" rather than "online"
+const HEARTBEAT_OFFLINE_MINUTES = 30; // no heartbeat for this long = presumed unexpectedly closed, dropped from the list entirely
 
 async function recordHeartbeat(sessionToken) {
   const session = validateSessionToken(sessionToken);
@@ -1881,10 +1882,18 @@ async function publicLookupHostelStudent(identifier) {
 
 async function getOnlineUsers() {
   const sessions = await getSetting(ACTIVE_SESSIONS_KEY, {});
-  const cutoff = Date.now() - HEARTBEAT_STALE_MINUTES * 60 * 1000;
+  const idleCutoff = Date.now() - HEARTBEAT_STALE_MINUTES * 60 * 1000;
+  const offlineCutoff = Date.now() - HEARTBEAT_OFFLINE_MINUTES * 60 * 1000;
   const online = Object.keys(sessions)
-    .filter(userId => sessions[userId].lastHeartbeat >= cutoff)
-    .map(userId => ({ userId, actorName: sessions[userId].actorName, loginTime: sessions[userId].loginTime, lastHeartbeat: sessions[userId].lastHeartbeat, ip: sessions[userId].ip || '' }))
+    .filter(userId => sessions[userId].lastHeartbeat >= offlineCutoff)
+    .map(userId => ({
+      userId,
+      actorName: sessions[userId].actorName,
+      loginTime: sessions[userId].loginTime,
+      lastHeartbeat: sessions[userId].lastHeartbeat,
+      ip: sessions[userId].ip || '',
+      status: sessions[userId].lastHeartbeat >= idleCutoff ? 'online' : 'idle'
+    }))
     .sort((a, b) => b.loginTime - a.loginTime);
   return { ok: true, users: online };
 }
@@ -2138,7 +2147,7 @@ async function undoRecentHostelVerification(rowId, sessionToken) {
 
 async function checkStaleSessions() {
   const sessions = await getSetting(ACTIVE_SESSIONS_KEY, {});
-  const cutoff = Date.now() - HEARTBEAT_STALE_MINUTES * 60 * 1000;
+  const cutoff = Date.now() - HEARTBEAT_OFFLINE_MINUTES * 60 * 1000;
   let changed = false;
 
   for (const userId of Object.keys(sessions)) {
