@@ -698,7 +698,9 @@ async function checkLogin(userId, password, deviceInfo) {
 // Explicitly invalidates a session token server-side at logout, rather
 // than relying solely on it eventually expiring on its own.
 async function logoutSession(token) {
+  const session = validateSessionToken(token);
   await invalidateSessionToken(token);
+  if (session) await clearActiveSessionByUserId(session.userId);
   return { ok: true };
 }
 
