@@ -54,6 +54,17 @@ function pushChatMessageToUser(userId, message){
   });
 }
 
+function pushReadReceiptToUser(userId, readByUserId){
+  const sockets = chatConnections.get(String(userId));
+  if(!sockets || !sockets.size) return;
+  const payload = JSON.stringify({ type: 'read', from: readByUserId });
+  sockets.forEach(ws => {
+    if(ws.readyState === ws.OPEN){
+      try{ ws.send(payload); }catch(e){ /* connection likely stale; cleanup happens on close */ }
+    }
+  });
+}
+
 // ---------- Phase 1, 2, and 3 all wired in now ----------
 const API_FUNCTIONS = {
   // Phase 1
@@ -99,7 +110,14 @@ const API_FUNCTIONS = {
     if(result.ok) pushChatMessageToUser(toUserId, result.message);
     return result;
   },
-  getChatMessages: core.getChatMessages,
+  getChatMessages: async (otherUserId, sessionToken) => {
+    const result = await core.getChatMessages(otherUserId, sessionToken);
+    if(result.ok && result.didMarkRead){
+      const session = core.validateSessionToken(sessionToken);
+      if(session) pushReadReceiptToUser(otherUserId, session.userId);
+    }
+    return result;
+  },
   getChatConversations: core.getChatConversations,
   getStaffLeaderboard: core.getStaffLeaderboard,
   getLoginDigest: core.getLoginDigest,
