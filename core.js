@@ -1900,6 +1900,24 @@ async function getOnlineUsers() {
   return { ok: true, users: online };
 }
 
+// One-time cleanup for presence entries that accumulated before the logout/
+// tab-close cleanup existed (see logoutSession and logSessionEnd above) -
+// wipes the whole presence store. Safe to run at any time: anyone
+// genuinely still active gets automatically re-added by their own next
+// heartbeat, which fires every 3 minutes, so this can't meaningfully
+// remove a real, currently-active person from the online list.
+async function clearAllOnlinePresence(sessionToken) {
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const users = await getAllUsers();
+  if (!users[session.userId] || users[session.userId].role !== 'admin') {
+    return { ok: false, error: 'Only an admin can do this.' };
+  }
+  await setSetting(ACTIVE_SESSIONS_KEY, {});
+  await logActivity(session.name || session.userId, 'Cleared Stale Online Sessions', '');
+  return { ok: true };
+}
+
 // ---------- Admin/staff direct chat ----------
 // Messages for a given pair of users live under one deterministic settings
 // key (sorted userIds, so it resolves the same regardless of who's asking).
@@ -3722,7 +3740,7 @@ module.exports = {
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
   getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, updateHostelStudentDetails, setHostelStudentActiveStatus, bulkSetHostelActiveStatus, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv, exportHostelVerifiedLastDayAsCsv,
   importNewHostelData, importHostelVerificationUpdates, importHostelInactiveList, getLastHostelImportInfo,
-  askAiHelpAssistant, getHelpFaqList, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers,
+  askAiHelpAssistant, getHelpFaqList, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers, clearAllOnlinePresence,
   sendChatMessage, getChatMessages, getChatConversations,
   getStaffLeaderboard, getLoginDigest, undoRecentVerification, undoRecentHostelVerification,
   publicLookupStudent, publicLookupHostelStudent,
