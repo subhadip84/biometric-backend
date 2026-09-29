@@ -1392,6 +1392,38 @@ function detectImportColumns(headers) {
   return detectColumns(headers);
 }
 
+// Aliases accepted in an uploaded hostel file's own headers - separate from
+// HEADER_CANDIDATES above since the hostel sheet has several fields (course,
+// admission type, gender, hostel name, room, food coupon) the main roster
+// doesn't. Matched the same way: normalize each header, then check whether
+// any candidate substring for a field appears in it.
+const HOSTEL_UPLOAD_HEADER_CANDIDATES = {
+  studentname: ['studentname', 'name'],
+  applicationno: ['applicationnumber', 'appno', 'application', 'rollnumber', 'rollno', 'roll'],
+  registrationno: ['registrationnumber', 'regno', 'registration'],
+  machinecode: ['machinecode', 'machine'],
+  sitecode: ['sitecode'],
+  course: ['course'],
+  admissiontype: ['admissiontype', 'admission'],
+  gender: ['gender'],
+  hostelname: ['hostelname'],
+  roomno: ['roomno', 'room'],
+  foodcoupon: ['foodcoupon']
+};
+
+function detectHostelUploadColumns(headers) {
+  const col = {};
+  Object.keys(HOSTEL_UPLOAD_HEADER_CANDIDATES).forEach(field => {
+    let found = -1;
+    for (let i = 0; i < headers.length; i++) {
+      const norm = normalize(headers[i]);
+      if (HOSTEL_UPLOAD_HEADER_CANDIDATES[field].some(cand => norm.indexOf(cand) !== -1)) { found = i; break; }
+    }
+    col[field] = found;
+  });
+  return col;
+}
+
 // A handful of general-purpose plausibility checks, reused across every
 // column below. These aren't exact format validators - they catch the
 // obvious signature of a value that clearly belongs in a different
@@ -2906,8 +2938,7 @@ async function importNewHostelData(uploadedHeaders, uploadedRows, adminPassword,
   let col = detectHostelColumns(headers);
   col = await ensureHostelExtraColumns(headers, col);
 
-  const uCol = {};
-  uploadedHeaders.forEach((h, i) => { uCol[normalize(h)] = i; });
+  const uCol = detectHostelUploadColumns(uploadedHeaders);
 
   const existingAppNos = new Set(), existingRegNos = new Set();
   for (let r = 1; r < data.length; r++) {
@@ -2959,8 +2990,7 @@ async function importHostelVerificationUpdates(uploadedHeaders, uploadedRows, ad
   let col = detectHostelColumns(headers);
   col = await ensureHostelExtraColumns(headers, col);
 
-  const uCol = {};
-  uploadedHeaders.forEach((h, i) => { uCol[normalize(h)] = i; });
+  const uCol = detectHostelUploadColumns(uploadedHeaders);
 
   let updated = 0, alreadyDone = 0;
   const notFoundRows = [];
@@ -3013,8 +3043,7 @@ async function importHostelInactiveList(uploadedHeaders, uploadedRows, adminPass
   let col = detectHostelColumns(headers);
   col = await ensureHostelExtraColumns(headers, col);
 
-  const uCol = {};
-  uploadedHeaders.forEach((h, i) => { uCol[normalize(h)] = i; });
+  const uCol = detectHostelUploadColumns(uploadedHeaders);
 
   let updated = 0, alreadyInactive = 0;
   const notFoundRows = [];
