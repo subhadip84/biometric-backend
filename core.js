@@ -1557,6 +1557,69 @@ async function importNewStudents(uploadedHeaders, uploadedRows, adminPassword, s
   return { ok: true, added: newRows.length, skippedRows: skipped };
 }
 
+// Manual, one-at-a-time student entry - mirrors importNewStudents' validation
+// (required fields, duplicate check) for a single student rather than a batch.
+async function addSingleStudent(studentData, adminPassword, sessionToken) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
+
+  const name = String((studentData && studentData.name) || '').trim();
+  const appNo = String((studentData && studentData.appNo) || '').trim();
+  const regNo = String((studentData && studentData.regNo) || '').trim();
+  const machineCode = String((studentData && studentData.machineCode) || '').trim();
+  const siteCode = String((studentData && studentData.siteCode) || '').trim();
+  const studentType = String((studentData && studentData.studentType) || '').trim();
+
+  if (!name) return { ok: false, error: 'Name is required.' };
+  if (!appNo && !regNo) return { ok: false, error: 'Enter at least an Application No or a Registration Number.' };
+
+  const sheetName = await sheetsApi.getMasterSheetName();
+  const data = await sheetsApi.readRange(`${sheetName}!A1:ZZ`);
+  if (!data.length) return { ok: false, error: 'The master sheet is empty — cannot detect its column layout.' };
+  const headers = data[0];
+  let col = detectColumns(headers);
+  col = await ensureExtraColumns(sheetName, headers, col);
+
+  const appNoLower = appNo.toLowerCase(), regNoLower = regNo.toLowerCase();
+  for (let r = 1; r < data.length; r++) {
+    const existingAppNo = col.appNo > -1 ? String(data[r][col.appNo] || '').trim().toLowerCase() : '';
+    const existingRegNo = col.regNo > -1 ? String(data[r][col.regNo] || '').trim().toLowerCase() : '';
+    if ((appNoLower && existingAppNo === appNoLower) || (regNoLower && existingRegNo === regNoLower)) {
+      return { ok: false, error: 'A student with this Application No or Registration Number already exists.' };
+    }
+  }
+
+  const newRow = new Array(headers.length).fill('');
+  if (col.name > -1) newRow[col.name] = name;
+  if (col.appNo > -1) newRow[col.appNo] = appNo;
+  if (col.regNo > -1) newRow[col.regNo] = regNo;
+  if (col.machineCode > -1) newRow[col.machineCode] = machineCode;
+  if (col.siteCode > -1) newRow[col.siteCode] = siteCode;
+  if (col.studentType > -1) newRow[col.studentType] = studentType;
+  newRow[col.status] = 'Not Done';
+  newRow[col.lock] = '';
+
+  await sheetsApi.appendRows(sheetName, [newRow]);
+  await logActivity(actor || 'Admin', 'Added New Student', `${name} (${appNo || regNo})`);
+  return { ok: true };
+}
+
+// A quick, deterministic sanity check (no AI call needed) - if both a Reg No
+// and App No are given, do their embedded years actually agree? A real but
+// easy-to-miss data-entry slip: re-typing last semester's application number
+// against this semester's registration number, or vice versa.
+function checkYearMismatch(regNo, appNo) {
+  const regYear = deriveAcademicYear(regNo);
+  const appYear = deriveAcademicYear(appNo);
+  if (regYear && appYear && regYear !== appYear) {
+    return `The Registration Number looks like it's from ${regYear}, but the Application No looks like it's from ${appYear} — double-check these are for the same student.`;
+  }
+  return null;
+}
+
 async function importVerificationUpdates(uploadedHeaders, uploadedRows, adminPassword, sessionToken) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
@@ -2978,6 +3041,56 @@ async function importNewHostelData(uploadedHeaders, uploadedRows, adminPassword,
   return { ok: true, added: newRows.length, skippedRows: skipped };
 }
 
+async function addSingleHostelStudent(studentData, adminPassword, sessionToken) {
+  const currentAdminPassword = await getAdminPassword();
+  if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
+  const session = validateSessionToken(sessionToken);
+  if (!session) return { ok: false, error: 'Your session has expired. Please log in again.' };
+  const actor = session.name || session.userId;
+
+  const name = String((studentData && studentData.name) || '').trim();
+  const appNo = String((studentData && studentData.appNo) || '').trim();
+  const regNo = String((studentData && studentData.regNo) || '').trim();
+  const machineCode = String((studentData && studentData.machineCode) || '').trim();
+  const siteCode = String((studentData && studentData.siteCode) || '').trim();
+  const course = String((studentData && studentData.course) || '').trim();
+  const admissionType = String((studentData && studentData.admissionType) || '').trim();
+  const gender = String((studentData && studentData.gender) || '').trim();
+  const hostelName = String((studentData && studentData.hostelName) || '').trim();
+  const roomNo = String((studentData && studentData.roomNo) || '').trim();
+  const foodCoupon = String((studentData && studentData.foodCoupon) || '').trim();
+
+  if (!name) return { ok: false, error: 'Name is required.' };
+  if (!appNo && !regNo) return { ok: false, error: 'Enter at least an Application No or a Registration Number.' };
+
+  await sheetsApi.ensureSheet(HOSTEL_SHEET_NAME, HOSTEL_BASE_HEADERS);
+  const data = await sheetsApi.readRange(`${HOSTEL_SHEET_NAME}!A1:ZZ`);
+  const headers = data[0];
+  let col = detectHostelColumns(headers);
+  col = await ensureHostelExtraColumns(headers, col);
+
+  const appNoLower = appNo.toLowerCase(), regNoLower = regNo.toLowerCase();
+  for (let r = 1; r < data.length; r++) {
+    const existingAppNo = col['applicationno'] > -1 ? String(data[r][col['applicationno']] || '').trim().toLowerCase() : '';
+    const existingRegNo = col['registrationno'] > -1 ? String(data[r][col['registrationno']] || '').trim().toLowerCase() : '';
+    if ((appNoLower && existingAppNo === appNoLower) || (regNoLower && existingRegNo === regNoLower)) {
+      return { ok: false, error: 'A student with this Application No or Registration Number already exists.' };
+    }
+  }
+
+  const values = { registrationno: regNo, applicationno: appNo, machinecode: machineCode, sitecode: siteCode, studentname: name, course, admissiontype: admissionType, gender, hostelname: hostelName, roomno: roomNo, foodcoupon: foodCoupon };
+  const newRow = new Array(headers.length).fill('');
+  Object.keys(values).forEach(field => {
+    if (col[field] > -1) newRow[col[field]] = values[field];
+  });
+  newRow[col.status] = 'Not Done';
+  newRow[col.lock] = '';
+
+  await sheetsApi.appendRows(HOSTEL_SHEET_NAME, [newRow]);
+  await logActivity(actor || 'Admin', 'Added New Hostel Student', `${name} (${appNo || regNo})`);
+  return { ok: true };
+}
+
 async function importHostelVerificationUpdates(uploadedHeaders, uploadedRows, adminPassword, sessionToken) {
   const currentAdminPassword = await getAdminPassword();
   if (adminPassword !== currentAdminPassword) return { ok: false, error: 'Incorrect admin password.' };
@@ -3328,6 +3441,133 @@ async function askAiHelpAssistant(question) {
 }
 
 // ---------- Natural-language roster search (via Help Assistant) ----------
+// ---------- AI review of a manually-entered student record ----------
+// Deliberately narrow: plain code already handles required fields, duplicate
+// detection, and the Reg No/App No year check (see checkYearMismatch above) -
+// none of that needs an AI call. This is reserved for the one thing a rule
+// can't reliably judge: does this data actually look like a real student
+// record, or does it look like a placeholder, a typo that landed in the
+// wrong field, or a value that doesn't belong where it was typed?
+const NEW_STUDENT_REVIEW_SYSTEM_PROMPT = `You review ONE new student record being manually entered into a university's biometric verification system, looking only for signs the data might be wrong - not formatting style. Respond with ONLY a JSON object, no other text, no markdown fences.
+
+Look for things like:
+- A name that looks like a placeholder or test value ("test", "asdf", "xyz", "n/a", a single letter) rather than a real person's name.
+- A field whose value looks like it belongs in a DIFFERENT field (e.g. the Site Code field containing what looks like a full name, or the Name field containing what looks like a code or number).
+- A value that's suspiciously short, all the same character, or an obvious keyboard-mash.
+
+Do NOT flag: unusual but plausible real names, codes that just look unfamiliar, or genuinely empty optional fields - those are not your job here. Only flag things a careful human would actually raise an eyebrow at.
+
+Respond with exactly this shape:
+{"hasWarning": true|false, "warning": "<one short, plain sentence (under 25 words) naming the specific concern, or empty string if hasWarning is false>"}
+
+Examples:
+Name: "Test Student", AppNo: "APP-2026-1", RegNo: "", MachineCode: "", SiteCode: "", StudentType: ""
+-> {"hasWarning":true,"warning":"The name \\"Test Student\\" looks like a placeholder rather than a real student's name."}
+
+Name: "Priya Sharma", AppNo: "APP-2026-4821", RegNo: "AU/2026/0004821", MachineCode: "S0012345", SiteCode: "SOB", StudentType: "Regular"
+-> {"hasWarning":false,"warning":""}
+
+Name: "SOB", AppNo: "APP-2026-99", RegNo: "", MachineCode: "", SiteCode: "Rohan Das", StudentType: ""
+-> {"hasWarning":true,"warning":"The Name and Site Code fields look swapped - \\"SOB\\" looks like a site code and \\"Rohan Das\\" looks like a name."}`;
+
+async function reviewNewStudentEntry(studentData) {
+  const warnings = [];
+  const yearWarning = checkYearMismatch(studentData.regNo, studentData.appNo);
+  if (yearWarning) warnings.push(yearWarning);
+
+  const apiKey = (process.env.GROQ_API_KEY || '').trim();
+  if (!apiKey) return { ok: true, warnings }; // AI part is advisory-only; the deterministic check above still applies even if AI isn't configured
+  try {
+    const summary = `Name: "${studentData.name || ''}", AppNo: "${studentData.appNo || ''}", RegNo: "${studentData.regNo || ''}", MachineCode: "${studentData.machineCode || ''}", SiteCode: "${studentData.siteCode || ''}", StudentType: "${studentData.studentType || ''}"`;
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'openai/gpt-oss-120b',
+        max_tokens: 300,
+        reasoning_effort: 'low',
+        temperature: 0,
+        messages: [
+          { role: 'system', content: NEW_STUDENT_REVIEW_SYSTEM_PROMPT },
+          { role: 'user', content: summary.slice(0, 500) }
+        ]
+      })
+    });
+    if (!response.ok) { const errText = await response.text(); throw new Error(`Groq API error (${response.status}): ${errText}`); }
+    const data = await response.json();
+    const raw = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '{}';
+    const cleaned = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    if (parsed.hasWarning && parsed.warning) warnings.push(parsed.warning);
+    return { ok: true, warnings };
+  } catch (err) {
+    // Advisory feature - a Groq hiccup should never block someone from adding a student;
+    // the deterministic check above still gets returned either way.
+    return { ok: true, warnings };
+  }
+}
+
+// Hostel's version of the above - same narrow scope and same reasoning for
+// why most validation stays deterministic, but covers the five extra fields
+// a hostel record has that a main roster entry doesn't (course, admission
+// type, gender, hostel name, room, food coupon).
+const NEW_HOSTEL_STUDENT_REVIEW_SYSTEM_PROMPT = `You review ONE new hostel student record being manually entered into a university's biometric verification system, looking only for signs the data might be wrong - not formatting style. Respond with ONLY a JSON object, no other text, no markdown fences.
+
+Look for things like:
+- A name that looks like a placeholder or test value ("test", "asdf", "xyz", "n/a", a single letter) rather than a real person's name.
+- A field whose value looks like it belongs in a DIFFERENT field (e.g. the Course field containing what looks like a name, the Gender field containing something other than a gender, the Room No containing text instead of a room number, or the Name field containing what looks like a code, course title, or hostel name).
+- A value that's suspiciously short, all the same character, or an obvious keyboard-mash.
+
+Do NOT flag: unusual but plausible real names, course/hostel names that just look unfamiliar, or genuinely empty optional fields - those are not your job here. Only flag things a careful human would actually raise an eyebrow at.
+
+Respond with exactly this shape:
+{"hasWarning": true|false, "warning": "<one short, plain sentence (under 25 words) naming the specific concern, or empty string if hasWarning is false>"}
+
+Examples:
+Name: "Test Student", AppNo: "APP-2026-1", RegNo: "", MachineCode: "", SiteCode: "", Course: "", AdmissionType: "", Gender: "", HostelName: "", RoomNo: "", FoodCoupon: ""
+-> {"hasWarning":true,"warning":"The name \\"Test Student\\" looks like a placeholder rather than a real student's name."}
+
+Name: "Nasrin Parven", AppNo: "APP-2026-12074", RegNo: "AU/2026/0001137", MachineCode: "S0016755", SiteCode: "SOSA", Course: "B.Sc (Hons) Agriculture", AdmissionType: "NA", Gender: "Female", HostelName: "Girls Hostel 4", RoomNo: "101", FoodCoupon: "G_052"
+-> {"hasWarning":false,"warning":""}
+
+Name: "BBA", AppNo: "APP-2026-99", RegNo: "", MachineCode: "", SiteCode: "", Course: "Sattanu Datta", AdmissionType: "", Gender: "Male", HostelName: "", RoomNo: "abc", FoodCoupon: ""
+-> {"hasWarning":true,"warning":"The Name and Course fields look swapped, and Room No (\\"abc\\") doesn't look like a room number."}`;
+
+async function reviewNewHostelStudentEntry(studentData) {
+  const warnings = [];
+  const yearWarning = checkYearMismatch(studentData.regNo, studentData.appNo);
+  if (yearWarning) warnings.push(yearWarning);
+
+  const apiKey = (process.env.GROQ_API_KEY || '').trim();
+  if (!apiKey) return { ok: true, warnings };
+  try {
+    const summary = `Name: "${studentData.name || ''}", AppNo: "${studentData.appNo || ''}", RegNo: "${studentData.regNo || ''}", MachineCode: "${studentData.machineCode || ''}", SiteCode: "${studentData.siteCode || ''}", Course: "${studentData.course || ''}", AdmissionType: "${studentData.admissionType || ''}", Gender: "${studentData.gender || ''}", HostelName: "${studentData.hostelName || ''}", RoomNo: "${studentData.roomNo || ''}", FoodCoupon: "${studentData.foodCoupon || ''}"`;
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'openai/gpt-oss-120b',
+        max_tokens: 300,
+        reasoning_effort: 'low',
+        temperature: 0,
+        messages: [
+          { role: 'system', content: NEW_HOSTEL_STUDENT_REVIEW_SYSTEM_PROMPT },
+          { role: 'user', content: summary.slice(0, 700) }
+        ]
+      })
+    });
+    if (!response.ok) { const errText = await response.text(); throw new Error(`Groq API error (${response.status}): ${errText}`); }
+    const data = await response.json();
+    const raw = (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '{}';
+    const cleaned = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(cleaned);
+    if (parsed.hasWarning && parsed.warning) warnings.push(parsed.warning);
+    return { ok: true, warnings };
+  } catch (err) {
+    return { ok: true, warnings };
+  }
+}
+
 const ROSTER_FILTER_SYSTEM_PROMPT = `You parse a natural-language request into structured filter criteria for a student roster search tool. Respond with ONLY a JSON object, no other text, no markdown fences.
 
 Recognized fields (all optional, omit or use null if not mentioned):
@@ -3761,14 +4001,14 @@ module.exports = {
   createUser, deleteUser, updateUserDetails, getUserList,
   changeOwnPassword, adminResetPassword, changeAdminPassword,
   deleteStudent, updateStudentDetails, setStudentActiveStatus, bulkSetActiveStatus, getDistinctSiteCodes,
-  validateImportRows, importNewStudents, importVerificationUpdates, importInactiveList,
+  validateImportRows, importNewStudents, addSingleStudent, reviewNewStudentEntry, importVerificationUpdates, importInactiveList,
   getAnnouncements, publishAnnouncement, updateAnnouncement, deleteAnnouncement,
   logHelpQuestion, getHelpQuestionStats,
   logSessionIp, logSessionEnd, recordHeartbeat, clearActiveSession, checkStaleSessions,
   exportRosterAsCsv,
   getLastImportInfo, getTodayImportCount, getLastImportTimestamp,
   getHostelData, updateHostelStatus, adminUnlockHostel, deleteHostelStudent, updateHostelStudentDetails, setHostelStudentActiveStatus, bulkSetHostelActiveStatus, exportHostelAsCsv, exportHostelVerifiedTodayAsCsv, exportHostelVerifiedLastDayAsCsv,
-  importNewHostelData, importHostelVerificationUpdates, importHostelInactiveList, getLastHostelImportInfo,
+  importNewHostelData, addSingleHostelStudent, reviewNewHostelStudentEntry, importHostelVerificationUpdates, importHostelInactiveList, getLastHostelImportInfo,
   askAiHelpAssistant, getHelpFaqList, logHelpChatEvent, getUnusualActivityFlags, parseVoiceCommand, getOnlineUsers, clearAllOnlinePresence,
   sendChatMessage, getChatMessages, getChatConversations,
   getStaffLeaderboard, getLoginDigest, undoRecentVerification, undoRecentHostelVerification,
