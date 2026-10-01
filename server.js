@@ -8,7 +8,15 @@ const core = require('./core');
 const cron = require('node-cron');
 const { runDailyBackup } = require('./backup');
 const http = require('http');
-const { WebSocketServer } = require('ws');
+// ws powers instant chat delivery, but chat also works without it (falls back
+// to the slower polling), so a missing package must never stop the whole
+// backend from starting - login, verification and everything else depend on it.
+let WebSocketServer = null;
+try {
+  ({ WebSocketServer } = require('ws'));
+} catch (e) {
+  console.warn('ws package not installed - real-time chat disabled, falling back to polling. Run npm install to enable it.');
+}
 
 // Runs every day at 2:00 AM India time, matching the schedule the original
 // Apps Script version used. node-cron handles the timezone conversion.
@@ -91,6 +99,8 @@ const API_FUNCTIONS = {
   getDistinctSiteCodes: core.getDistinctSiteCodes,
   validateImportRows: core.validateImportRows,
   importNewStudents: core.importNewStudents,
+  addSingleStudent: core.addSingleStudent,
+  reviewNewStudentEntry: core.reviewNewStudentEntry,
   importVerificationUpdates: core.importVerificationUpdates,
   importInactiveList: core.importInactiveList,
   // Phase 3
@@ -165,6 +175,8 @@ const API_FUNCTIONS = {
   exportHostelVerifiedTodayAsCsv: core.exportHostelVerifiedTodayAsCsv,
   exportHostelVerifiedLastDayAsCsv: core.exportHostelVerifiedLastDayAsCsv,
   importNewHostelData: core.importNewHostelData,
+  addSingleHostelStudent: core.addSingleHostelStudent,
+  reviewNewHostelStudentEntry: core.reviewNewHostelStudentEntry,
   importHostelVerificationUpdates: core.importHostelVerificationUpdates,
   importHostelInactiveList: core.importHostelInactiveList,
   getLastHostelImportInfo: core.getLastHostelImportInfo,
@@ -207,7 +219,9 @@ const server = http.createServer(app);
 
 // WebSocket server for instant chat delivery, on its own path so it never
 // interferes with the existing POST '/' dispatcher the rest of the app uses.
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = WebSocketServer
+  ? new WebSocketServer({ server, path: '/ws' })
+  : { on() {}, clients: new Set() };
 
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -277,7 +291,17 @@ setInterval(() => {
   // Restores sessions that were still active before this restart, so
   // redeploying (or a free-tier spin-down/up) doesn't force everyone
   // using the app right now to log back in.
-  await core.rehydrateSessionsFromStorage();
+  // Bounded wait: if Google Sheets is slow or rate-limited at startup, the
+  // server still comes up (Render marks a service unhealthy if it doesn't
+  // bind its port promptly) - the worst case is people re-logging in, not
+  // the whole app being down.
+  await Promise.race([
+    core.rehydrateSessionsFromStorage(),
+    new Promise(resolve => setTimeout(() => {
+      console.warn('Session rehydration took too long - starting without waiting for it.');
+      resolve();
+    }, 8000))
+  ]);
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });
